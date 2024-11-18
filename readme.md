@@ -1,5 +1,5 @@
 ## Minimum Trajectory Prediction Code
-This is the python code for minimum trajectory prediction using STATSPerform trajectory data (private: should not be shared)
+This is the python code for minimum trajectory prediction using STATSPerform trajectory data (should not be shared)
 
 ## Author
 Keisuke Fujii 
@@ -14,9 +14,9 @@ pip install -r requirements.txt
 
 ## Usage
  
-* Run `run.sh` for a simiple demonstration of training and test using the NBA dataset (only one game).
+* Run `run.sh` for a simple demonstration of training and test using the STATSPerform dataset.
 
-* Actual commands in training and test of our model are also in `run.sh` (commented).  
+* Actual commands in training and test of our model are also in `run.sh`.  
 
 ## Results
 | Model name              |   mean pos    |   mean vel    |    max pos     |  max  vel      |
