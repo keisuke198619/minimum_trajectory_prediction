@@ -27,6 +27,7 @@ from data_loader_soccer import Dataset
 from preprocessing import *
 from helpers import *
 from sequencing import get_sequences
+import csv
 
 #from scipy import signal
 
@@ -172,23 +173,14 @@ def run_sanity(args,game_files):
     losses['e_vmax'] = np.max(losses['e_vmax'],1)
     avgL2_m = {}
     avgL2_sd = {}
-    bestL2_m = {}
-    bestL2_sd = {}
     for key in losses:
         avgL2_m[key] = np.mean(losses[key])
         avgL2_sd[key] = np.std(losses[key])
-        best = np.min(losses[key],0)
-        bestL2_m[key] =  np.mean(best)
-        bestL2_sd[key] = np.std(best)   
 
     print('Velocity (Sanity Check)')
     print('(mean):'
         +' $' + '{:.2f}'.format(avgL2_m['e_pos'])+' \pm '+'{:.2f}'.format(avgL2_sd['e_pos'])+'$ &'
         +' $' + '{:.2f}'.format(avgL2_m['e_vel'])+' \pm '+'{:.2f}'.format(avgL2_sd['e_vel'])+'$ &'
-        ) 
-    print('(best):'
-        +' $' + '{:.2f}'.format(bestL2_m['e_pos'])+' \pm '+'{:.2f}'.format(bestL2_sd['e_pos'])+'$ &'
-        +' $' + '{:.2f}'.format(bestL2_m['e_vel'])+' \pm '+'{:.2f}'.format(bestL2_sd['e_vel'])+'$ &'
         ) 
     print('(max):'
         +' $' + '{:.2f}'.format(avgL2_m['e_pmax'])+' \pm '+'{:.2f}'.format(avgL2_sd['e_pmax'])+'$ &'
@@ -240,7 +232,7 @@ if __name__ == '__main__':
     totalTimeSteps =  args.totalTimeSteps # 
 
     # save the processed file to disk to avoid repeated work
-    game_file0 = './data/all_'+args.data+'_games_'+str(n_GorS)+'_'
+    game_file0 = './data/all_'+args.data+'_games_'+str(n_GorS)+'_'+str(n_roles)
 
     game_file0 = game_file0 + '_filt'
 
@@ -387,16 +379,14 @@ if __name__ == '__main__':
     print('featurelen: '+str(featurelen)+' train_seqs: '+str(len_seqs_tr)+' val_seqs: '+str(len_seqs_val)+' test_seqs: '+str(len_seqs_test))
     
     # parameters for VRNN -----------------------------------
-    init_filename0 = path_init+ 'sub' + str(args.fs) + '_'
+    init_filename0 = path_init+ 'sub' + str(args.fs) + '_' + str(n_roles)
     init_filename0 = init_filename0 + 'filt_'  
-    init_filename00 = init_filename0 + args.data + '/'
-    
+   
 
     init_filename0 = init_filename0 + args.model + '_' + args.data + '/'
     init_filename0 = init_filename0 + str(batchSize) + '_' + str(totalTimeSteps)      
     if args.drop_ind:
         init_filename0 = init_filename0 + '_drop_ind' 
-    init_filename000 = init_filename0
 
     if args.res:
         init_filename0 = init_filename0 + '_res' 
@@ -404,13 +394,10 @@ if __name__ == '__main__':
     if not os.path.isdir(init_filename0):
         os.makedirs(init_filename0)
     init_pthname = '{}_state_dict'.format(init_filename0)
-    init_pthname0 = '{}_state_dict'.format(init_filename00)
     print('model: '+init_filename0)
 
     if not os.path.isdir(init_pthname):
         os.makedirs(init_pthname)
-    if not os.path.isdir(init_pthname0):
-        os.makedirs(init_pthname0)
 
     if (args.n_GorS==7500 and args.data == 'soccer'):
         batchSize = int(batchSize/2)
@@ -476,7 +463,6 @@ if __name__ == '__main__':
         'n_all_agents' : args.n_all_agents,
         'temperature' : temperature,
         'drop_ind' : args.drop_ind,
-        'init_pthname0' : init_pthname0
     }
         
     #'pretrain' : args.pretrain,
@@ -564,8 +550,6 @@ if __name__ == '__main__':
             if epochs_since_best == 5: # and lr > args.min_lr:
                 # Load previous best model
                 filename = '{}_best.pth'.format(init_pthname)
-                if epoch <= pretrain_time:
-                    filename = '{}_best_pretrain.pth'.format(init_pthname0)
 
                 state_dict = torch.load(filename)
 
@@ -613,8 +597,6 @@ if __name__ == '__main__':
                 epochs_since_best = 0
 
                 filename = '{}_best.pth'.format(init_pthname)
-                if epoch <= pretrain_time:
-                    filename = '{}_best_pretrain.pth'.format(init_pthname0)
 
                 torch.save(model.state_dict(), filename)
                 print('##### Best model #####')
@@ -629,15 +611,6 @@ if __name__ == '__main__':
                 torch.save(model.state_dict(), filename)
                 print('########## Saved model ##########')
 
-            # End of pretrain stage
-            if epoch == pretrain_time:
-                print('########## END pretrain ##########')
-                best_val_loss = 0
-                epochs_since_best = 0
-                lr = max(args.start_lr, args.min_lr)
-
-                state_dict = torch.load('{}_best_pretrain.pth'.format(init_pthname0))
-                model.load_state_dict(state_dict)
                            
         print('Best Val Loss: {:.4f}'.format(best_val_loss))
     
@@ -650,94 +623,84 @@ if __name__ == '__main__':
 
     # Load ground-truth states from test set
     loader = test_loader 
-    n_sample = 10
-    n_smp_b = 1
-
-    rep_smp = int(n_sample/n_smp_b)
+    n_sample = 1
 
     if True:
         print('test sample')
         # Sample trajectory
         samples = [np.zeros((args.horizon+1,args.n_agents,len_seqs_test,
             featurelen)) for t in range(n_sample)]
-        hard_att = np.zeros((args.horizon,args.n_agents,len_seqs_test,
-            args.n_all_agents+1,n_sample))
-        macros = np.zeros((args.horizon,args.n_agents,len_seqs_test,n_sample))
         loss_i = [{} for t in range(n_sample)]
         losses = {}
         losses2 = {}
-        for r in range(rep_smp):
-            start_time = time.time()
-            if r > 0:
-                state_dict = torch.load('{}_best.pth'.format(init_pthname, params['model']), map_location=lambda storage, loc: storage)
-                model.load_state_dict(state_dict)
 
-            for batch_idx, (data) in enumerate(loader):
-                if args.cuda:
-                    data = data.cuda() #, data_y.cuda()
-                    # (batch, agents, time, feat) => (time, agents, batch, feat) 
-                data = data.permute(2, 1, 0, 3)
+        start_time = time.time()
+        i = 0
+        for batch_idx, (data) in enumerate(loader):
+            if args.cuda:
+                data = data.cuda() #, data_y.cuda()
+                # (batch, agents, time, feat) => (time, agents, batch, feat) 
+            data = data.permute(2, 1, 0, 3)
+            
+            sample, output, output2 = model.sample(data, rollout=True, burn_in=args.burn_in, CF_pred=False, n_sample=1, TEST = True)
 
+            samples[i][:,:,batch_idx*batchSize_test:(batch_idx+1)*batchSize_test] = sample.detach().cpu().numpy()[:-3]
+
+            del sample 
+            for key in output:
+                if batch_idx == 0:
+                    losses[key] = np.zeros(1)
+                    losses2[key] = np.zeros((len_seqs_test))
+                losses[key] += np.sum(output[key].detach().cpu().numpy(),axis=1)
+                try: losses2[key][batch_idx*batchSize_test:(batch_idx+1)*batchSize_test] = output[key].detach().cpu().numpy()
+                except: import pdb; pdb.set_trace()
                 
-                sample, output, output2 = model.sample(data, rollout=True, burn_in=args.burn_in, CF_pred=False, n_sample=n_smp_b, TEST = True)
+            for key in output2:
+                if batch_idx == 0:
+                    losses[key] = np.zeros(1)
+                    losses2[key] = np.zeros((len_seqs_test))
+                losses[key] += np.sum(output2[key].detach().cpu().numpy(),axis=1)
+                losses2[key][batch_idx*batchSize_test:(batch_idx+1)*batchSize_test] = output2[key].detach().cpu().numpy()
 
-                for i in range(n_smp_b):
-                    sample0 = sample.detach().cpu().numpy() if n_smp_b == 1 else sample[i].detach().cpu().numpy()   
-                    samples[r*n_smp_b+i][:,:,batch_idx*batchSize_test:(batch_idx+1)*batchSize_test] = sample0[:-3]
+        for key in losses:
+            loss_i[i][key] = losses[key][i] / len(test_loader.dataset)
+        print('Test sample '+str(i)+':\t'+loss_str(loss_i[i]))
 
-                del sample, sample0 
-                for key in output:
-                    if batch_idx == 0 and r == 0:
-                        losses[key] = np.zeros(n_sample)
-                        losses2[key] = np.zeros((n_sample, len_seqs_test))
-                    losses[key][r*n_smp_b:(r+1)*n_smp_b] += np.sum(output[key].detach().cpu().numpy(),axis=1)
-                    losses2[key][r*n_smp_b:(r+1)*n_smp_b, batch_idx*batchSize_test:(batch_idx+1)*batchSize_test] = output[key].detach().cpu().numpy()
-                    
-                for key in output2:
-                    if batch_idx == 0 and r == 0:
-                        losses[key] = np.zeros(n_sample)
-                        losses2[key] = np.zeros((n_sample, len_seqs_test))
-                    losses[key][r*n_smp_b:(r+1)*n_smp_b] += np.sum(output2[key].detach().cpu().numpy(),axis=1)
-                    losses2[key][r*n_smp_b:(r+1)*n_smp_b, batch_idx*batchSize_test:(batch_idx+1)*batchSize_test] = output2[key].detach().cpu().numpy()
-
-            for i in range(n_smp_b):
-                for key in losses:
-                    loss_i[r*n_smp_b+i][key] = losses[key][r*n_smp_b+i] / len(test_loader.dataset)
-                print('Test sample '+str(r*n_smp_b+i)+':\t'+loss_str(loss_i[r*n_smp_b+i]))
-
-            epoch_time = time.time() - start_time
-            print('Time:\t {:.3f}'.format(epoch_time)) # Sample {} r*n_smp_b,
+        epoch_time = time.time() - start_time
+        print('Time:\t {:.3f}'.format(epoch_time)) # Sample {} r*n_smp_b,
             
         if True: # create Mean + SD Tex Table for positions------------------------------------------------
             avgL2_m = {}
             avgL2_sd = {}
-            bestL2_m = {}
-            bestL2_sd = {}
             for key in losses2:
                 mean = np.mean(losses2[key],0)
                 avgL2_m[key] =  np.mean(mean)
                 avgL2_sd[key] = np.std(mean)
-                best = np.min(losses2[key],0)
-                bestL2_m[key] =  np.mean(best)
-                bestL2_sd[key] = np.std(best)    
 
             print(args.model)
             print('(mean):'
                 +' $' + '{:.2f}'.format(avgL2_m['e_pos'])+' \pm '+'{:.2f}'.format(avgL2_sd['e_pos'])+'$ &'
                 +' $' + '{:.2f}'.format(avgL2_m['e_vel'])+' \pm '+'{:.2f}'.format(avgL2_sd['e_vel'])+'$ &'
                 ) 
-            print('(best):'
-                +' $' + '{:.2f}'.format(bestL2_m['e_pos'])+' \pm '+'{:.2f}'.format(bestL2_sd['e_pos'])+'$ &'
-                +' $' + '{:.2f}'.format(bestL2_m['e_vel'])+' \pm '+'{:.2f}'.format(bestL2_sd['e_vel'])+'$ &'
-                ) 
             print('(max):'
                 +' $' + '{:.2f}'.format(avgL2_m['e_pmax'])+' \pm '+'{:.2f}'.format(avgL2_sd['e_pmax'])+'$ &'
                 +' $' + '{:.2f}'.format(avgL2_m['e_vmax'])+' \pm '+'{:.2f}'.format(avgL2_sd['e_vmax'])+'$ &'
                 ) 
-
+            
         # Save samples
-        experiment_path = '{}/experiments/sample'.format(init_filename0)
+        experiment_path = './results'
         if not os.path.exists(experiment_path):
             os.makedirs(experiment_path)
-        pickle.dump([samples, hard_att, losses2], open(experiment_path+'/samples.p', 'wb'), protocol=4)
 
+        # Save samples to CSV        
+        for seq in range(samples[0].shape[2]):
+            sample_ = samples[0][:args.burn_in, :, seq] #
+            sample_path = os.path.join(experiment_path, 'result_'+str(seq)+'.csv')
+            df = pd.DataFrame()
+            for t in range(sample_.shape[0]):
+                for agent in range(sample_.shape[1]):
+                    df.loc[t, f'agent_{agent}_x'] = sample_[t, agent, 0]
+                    df.loc[t, f'agent_{agent}_y'] = sample_[t, agent, 1]
+            df.to_csv(sample_path, index_label='time')
+        print('Samples saved to {}'.format(sample_path))
+        import pdb; pdb.set_trace()
