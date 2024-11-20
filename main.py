@@ -98,8 +98,7 @@ def run_epoch(train,rollout,hp):
         
         for key in batch_losses2:
             if batch_idx == 0:
-                try: losses2[key] = batch_losses2[key].item()
-                except: import pdb; pdb.set_trace()
+                losses2[key] = batch_losses2[key].item()
             else:
                 losses2[key] += batch_losses2[key].item()
 
@@ -687,9 +686,8 @@ if __name__ == '__main__':
             avgL2_m = {}
             avgL2_sd = {}
             for key in losses2:
-                mean = np.mean(losses2[key],0)
-                avgL2_m[key] =  np.mean(mean)
-                avgL2_sd[key] = np.std(mean)
+                avgL2_m[key] =  np.mean(losses2[key])
+                avgL2_sd[key] = np.std(losses2[key])
 
             print(args.model)
             print('(mean):'
@@ -700,7 +698,7 @@ if __name__ == '__main__':
                 +' $' + '{:.2f}'.format(avgL2_m['e_e_p'])+' \pm '+'{:.2f}'.format(avgL2_sd['e_e_p'])+'$ &'
                 +' $' + '{:.2f}'.format(avgL2_m['e_e_v'])+' \pm '+'{:.2f}'.format(avgL2_sd['e_e_v'])+'$ &'
                 ) 
-
+            import pdb; pdb.set_trace()
         if args.Challenge:    
             # Save samples
             experiment_path = './results/test_'+str(n_roles)+'/submission'

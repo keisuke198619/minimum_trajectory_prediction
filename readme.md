@@ -17,10 +17,10 @@ pip install -r requirements.txt
 * Run `run.sh` for a simple demonstration of training and test using the STATSPerform dataset.
 
 ## Results
-| Model name / pred err   | mean pos [m]  | mean vel [m/s] |  max pos [m]   | max vel [m/s]  |
-| ------------------------|-------------- | -------------- | -------------- | -------------- |
-| 1. Velocity             |               |                |                |                |  
-| 2. RNN-Gauss (4 epochs) | 3.32 +/- 1.45 | 2.70 +/- 0.55  |  6.16 +/- 2.88 |  3.95 +/- 0.93 |
+| Model name / pred err    | mean pos [m]  | mean vel [m/s] | endpoint pos[m] | endpoint vel[m/s]|
+| -------------------------|-------------- | -------------- | --------------- | -----------------|
+| 1. Velocity              | 4.85 +/- 1.30 | 3.68 +/- 0.84  |  9.28 +/- 2.57  |  3.96 +/- 1.42   |  
+| 2. RNN-Gauss (10 epochs) | 3.64 +/- 1.23 | 2.79 +/- 0.46  |  6.83 +/- 2.45  |  2.83 +/- 0.67   |
 
 
 ## Further details 
