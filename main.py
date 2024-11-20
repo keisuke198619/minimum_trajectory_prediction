@@ -1,8 +1,4 @@
-from datetime import datetime
-from math import sqrt
-import glob, os, sys, math, warnings
-import copy, time 
-from copy import deepcopy
+import glob, os, time, math, warnings, copy
 import argparse
 import random
 import pickle
@@ -11,7 +7,6 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 from sklearn.model_selection import train_test_split
-import hmmlearn 
 
 import torch
 import torch.nn as nn
@@ -27,7 +22,6 @@ from data_loader_soccer import Dataset
 from preprocessing import *
 from helpers import *
 from sequencing import get_sequences
-import csv
 
 #from scipy import signal
 
@@ -39,20 +33,21 @@ import csv
 parser = argparse.ArgumentParser()
 parser.add_argument('--data', type=str, required=True)
 parser.add_argument('--n_GorS', type=int, required=True)
-parser.add_argument('--n_roles', type=int, required=True)
+parser.add_argument('--n_roles', type=int, default=23)
 parser.add_argument('--val_devide', type=int, default=10)
 parser.add_argument('-t_step', '--totalTimeSteps', type=int, default=50)
 parser.add_argument('--overlap', type=int, default=40)
 parser.add_argument('--batchsize', type=int, required=True)
 parser.add_argument('--n_epoch', type=int, required=True)
 parser.add_argument('--model', type=str, required=True)
-parser.add_argument('-ev_th','--event_threshold', type=int, required=True, help='event with frames less than the threshold will be removed')
+parser.add_argument('-ev_th','--event_threshold', type=int, default=50, help='event with frames less than the threshold will be removed')
 parser.add_argument('--fs', type=int, default=10)
 # parser.add_argument('--acc', type=int, default=0)
 parser.add_argument('--cont', action='store_true')
 parser.add_argument('--num_workers', type=int, default=0)
 parser.add_argument('--numProcess', type=int, default=16)
 parser.add_argument('--TEST', action='store_true')
+parser.add_argument('--Challenge', action='store_true')
 parser.add_argument('--Sanity', action='store_true')
 parser.add_argument('--res', action='store_true')
 parser.add_argument('--pretrain', type=int, default=0)
@@ -66,6 +61,8 @@ game_dir = main_dir+'data_'+args.data+'/'
 args.game_dir = game_dir
 Data = pd.read_pickle(game_dir+'train_data.pkl')
 path_init = './weights/' 
+if args.Challenge:
+    args.TEST = True
 
 def run_epoch(train,rollout,hp):
     loader = train_loader if train == 1 else val_loader if train == 0 else test_loader
@@ -91,7 +88,7 @@ def run_epoch(train,rollout,hp):
                 nn.utils.clip_grad_norm_(model.parameters(), clip)
             optimizer.step()
         else:
-            _, batch_losses, batch_losses2 = model.sample(data, rollout=True, burn_in=hp['burn_in'])
+            _, batch_losses, batch_losses2 = model.sample(data, rollout=True, burn_in=hp['burn_in'])# , TEST=TEST)
         
         for key in batch_losses:
             if batch_idx == 0:
@@ -101,7 +98,8 @@ def run_epoch(train,rollout,hp):
         
         for key in batch_losses2:
             if batch_idx == 0:
-                losses2[key] = batch_losses2[key].item()
+                try: losses2[key] = batch_losses2[key].item()
+                except: import pdb; pdb.set_trace()
             else:
                 losses2[key] += batch_losses2[key].item()
 
@@ -131,46 +129,44 @@ def run_sanity(args,game_files):
                 tmp = np.load(f,allow_pickle=True)[0] 
                 data = np.concatenate([data,tmp],axis=1)            
 
-    n_agents,batchSize,_,x_dim = data.shape
+    n_agents = args.n_agents
+    batchSize,_,x_dim = data.shape
     n_feat = args.n_feat
     burn_in = args.burn_in
     fs = args.fs
     GT = data.copy()
     losses = {}
     losses['e_pos'] = np.zeros(batchSize)
-    losses['e_pmax'] = np.zeros((batchSize,args.horizon-burn_in))
-    losses['e_vmax'] = np.zeros((batchSize,args.horizon-burn_in))
     losses['e_vel'] = np.zeros(batchSize)
-    next_acc = np.zeros([batchSize,2])  
+    losses['e_e_p'] = np.zeros(batchSize)
+    losses['e_e_v'] = np.zeros(batchSize)
 
     for t in range(args.horizon):
         for i in range(n_agents):
             
-            current_pos = data[i,:,t,n_feat*i+0:n_feat*i+2]
-            current_vel = data[i,:,t,n_feat*i+2:n_feat*i+4]
-            current_acc = data[i,:,t,n_feat*i+4:n_feat*i+6]
-            next_pos0 = GT[i,:,t+1,n_feat*i+0:n_feat*i+2]
-            next_vel0 = GT[i,:,t+1,n_feat*i+2:n_feat*i+4]
-            next_acc0 = GT[i,:,t+1,n_feat*i+4:n_feat*i+6] 
-            if t > 0:
-                past_vel = data[i,:,t-1,n_feat*i+2:n_feat*i+4]
+            current_pos = data[:,t,n_feat*i+0:n_feat*i+2]
+            current_vel = data[:,burn_in,n_feat*i+2:n_feat*i+4]
+            next_pos0 = GT[:,t+1,n_feat*i+0:n_feat*i+2]
+            next_vel0 = GT[:,t+1,n_feat*i+2:n_feat*i+4]
 
             if t >= burn_in: 
                 next_pos = current_pos + current_vel*fs      
                 next_vel = current_vel 
- 
                 losses['e_pos'] += batch_error(next_pos, next_pos0)
-                losses['e_pmax'][:,t-burn_in] += batch_error(next_pos, next_pos0)
                 losses['e_vel'] += batch_error(next_vel, next_vel0)
-                losses['e_vmax'][:,t-burn_in] += batch_error(next_vel, next_vel0)
 
-                data[i,:,t+1,n_feat*i+0:n_feat*i+2] = np.concatenate([next_pos],1)      
+                data[:,t+1,n_feat*i+0:n_feat*i+2] = next_pos
+            if t == args.horizon-1:
+                losses['e_e_p'] += batch_error(next_pos, next_pos0)
+                losses['e_e_v'] += batch_error(next_vel, next_vel0)
+                
 
     # del data
-    losses['e_pos'] /= (args.horizon-burn_in) 
-    losses['e_vel'] /= (args.horizon-burn_in)
-    losses['e_pmax'] = np.max(losses['e_pmax'],1)
-    losses['e_vmax'] = np.max(losses['e_vmax'],1)
+    losses['e_pos'] /= (args.horizon-burn_in)*n_agents 
+    losses['e_vel'] /= (args.horizon-burn_in)*n_agents
+    losses['e_e_p'] /= n_agents 
+    losses['e_e_v'] /= n_agents
+
     avgL2_m = {}
     avgL2_sd = {}
     for key in losses:
@@ -182,13 +178,14 @@ def run_sanity(args,game_files):
         +' $' + '{:.2f}'.format(avgL2_m['e_pos'])+' \pm '+'{:.2f}'.format(avgL2_sd['e_pos'])+'$ &'
         +' $' + '{:.2f}'.format(avgL2_m['e_vel'])+' \pm '+'{:.2f}'.format(avgL2_sd['e_vel'])+'$ &'
         ) 
-    print('(max):'
-        +' $' + '{:.2f}'.format(avgL2_m['e_pmax'])+' \pm '+'{:.2f}'.format(avgL2_sd['e_pmax'])+'$ &'
-        +' $' + '{:.2f}'.format(avgL2_m['e_vmax'])+' \pm '+'{:.2f}'.format(avgL2_sd['e_vmax'])+'$ &'
+    print('(endpoint):'
+        +' $' + '{:.2f}'.format(avgL2_m['e_e_p'])+' \pm '+'{:.2f}'.format(avgL2_sd['e_e_p'])+'$ &'
+        +' $' + '{:.2f}'.format(avgL2_m['e_e_v'])+' \pm '+'{:.2f}'.format(avgL2_sd['e_e_v'])+'$ &'
         ) 
+    
             
     losses['e_pos'] =  np.mean(losses['e_pos'])
-    losses['e_pmax'] = np.mean(losses['e_pmax'])
+    losses['e_e_p'] = np.mean(losses['e_e_p'])
     return losses
 
 def batch_error(predict, true):
@@ -230,6 +227,7 @@ if __name__ == '__main__':
     batchSize = args.batchsize # 
     overlapWindow = args.overlap # 
     totalTimeSteps =  args.totalTimeSteps # 
+    args.burn_in = 20 # int(totalTimeSteps/3)
 
     # save the processed file to disk to avoid repeated work
     game_file0 = './data/all_'+args.data+'_games_'+str(n_GorS)+'_'+str(n_roles)
@@ -286,62 +284,61 @@ if __name__ == '__main__':
             game_data = [game_data[i] for i in game_train] 
 
         # create sequences -----------------------------------------------------------
-        X_train_all,Y_train_all = get_sequences(game_data, activeRoleInd, 
+        X_train_all = get_sequences(game_data, activeRoleInd, 
                 totalTimeSteps+5, overlapWindow, n_pl, n_feat) # [role][seqs][steps,feats]
 
         print('get train sequences')
         del game_data # -------------
         # split train/validation
-        len_seqs = len(X_train_all[0]) 
+        len_seqs = len(X_train_all) 
         X_ind = np.arange(len_seqs)
         ind_train, ind_val,_,_ = train_test_split(X_ind, X_ind, test_size=1/val_devide, random_state=42)
 
-        featurelen = X_train_all[0][0].shape[1] 
+        featurelen = X_train_all[0].shape[1] 
         len_seqs_tr = len(ind_train)
         offSet_tr = math.floor(len_seqs_tr / batchSize)
         batchSize_val = len(ind_val)
 
-        X_all = np.zeros([n_roles, len(ind_train), totalTimeSteps+4, featurelen])
-        X_val_all = np.zeros([n_roles, len(ind_val), totalTimeSteps+4, featurelen])
-        for i, X_train in enumerate(X_train_all):
-            i_tr = 0; i_val = 0
-            for b in range(len_seqs):  
-                if set([b]).issubset(set(ind_train)):
-                    for r in range(totalTimeSteps+4):
-                        X_all[i][i_tr][r][:] = np.squeeze(X_train[b][r,:])
-                    i_tr += 1
-                else:
-                    for r in range(totalTimeSteps+4):
-                        X_val_all[i][i_val][r][:] = np.squeeze(X_train[b][r,:])
-                    i_val += 1
+        X_all = np.zeros([len(ind_train), totalTimeSteps+4, featurelen])
+        X_val_all = np.zeros([len(ind_val), totalTimeSteps+4, featurelen])
+        # for i, X_train in enumerate(X_train_all):
+        i_tr = 0; i_val = 0
+        for b in range(len_seqs):  
+            if set([b]).issubset(set(ind_train)):
+                for r in range(totalTimeSteps+4):
+                    X_all[i_tr][r][:] = np.squeeze(X_train_all[b][r,:])
+                i_tr += 1
+            else:
+                for r in range(totalTimeSteps+4):
+                    X_val_all[i_val][r][:] = np.squeeze(X_train_all[b][r,:])
+                i_val += 1
 
         print('create train sequences')
         
         del X_train_all
 
         # for test data-------------
-        X_test_all,Y_test_all = get_sequences(game_data_te, activeRoleInd, 
+        X_test_all = get_sequences(game_data_te, activeRoleInd, 
             totalTimeSteps+5, overlapWindow, n_pl, n_feat) # [role][seqs][steps,feats]
         del game_data_te
 
-        len_seqs_val = len(X_val_all[0])  
-        len_seqs_test = len(X_test_all[0])  
+        len_seqs_val = len(X_val_all)  
+        len_seqs_test = len(X_test_all)  
         batchSize_test = len_seqs_test # args.batchsize # 32
         len_seqs_test0 = len_seqs_test
         ind_test = np.arange(len_seqs_test)
 
-        X_test_test_all = np.zeros([n_roles, len_seqs_test, totalTimeSteps_test+4, featurelen]) 
-        for i, X_test in enumerate(X_test_all):
-            i_te = 0
-            for b in range(len_seqs_test0):
-                if args.data == 'soccer':
-                    for r in range(totalTimeSteps_test+4):
-                        X_test_test_all[i][b][r][:] = np.squeeze(X_test[b][r,:])
+        X_test_test_all = np.zeros([len_seqs_test, totalTimeSteps_test+4, featurelen]) 
+        i_te = 0
+        for b in range(len_seqs_test0):
+            if args.data == 'soccer':
+                for r in range(totalTimeSteps_test+4):
+                    X_test_test_all[b][r][:] = np.squeeze(X_test_all[b][r,:])
 
         print('create test sequences')
         # if offSet_tr > 0: 
         for j in range(offSet_tr):
-            tmp_data = X_all[:,j*batchSize:(j+1)*batchSize,:,:]
+            tmp_data = X_all[j*batchSize:(j+1)*batchSize,:,:]
             with open(game_files+'_tr'+str(j)+'.pkl', 'wb') as f:
                 pickle.dump([tmp_data,len_seqs_val,len_seqs_test], f, protocol=4) 
 
@@ -349,32 +346,60 @@ if __name__ == '__main__':
         batchval = int(len_seqs_val/J)
         for j in range(J):
             if j < J-1:
-                tmp_data = X_val_all[:,j*batchval:(j+1)*batchval,:,:]
+                tmp_data = X_val_all[j*batchval:(j+1)*batchval,:,:]
             else:
-                tmp_data = X_val_all[:,j*batchval:,:,:]
+                tmp_data = X_val_all[j*batchval:,:,:]
             with open(game_files+'_val_'+str(j)+'.pkl', 'wb') as f:
                 pickle.dump([tmp_data], f, protocol=4)                       
 
         batchte = int(len_seqs_test/J)
         for j in range(J):
             if j < J-1:
-                tmp_data = X_test_test_all[:,j*batchte:(j+1)*batchte,:,:]
+                tmp_data = X_test_test_all[j*batchte:(j+1)*batchte,:,:]
             else:
-                tmp_data = X_test_test_all[:,j*batchte:,:,:]
+                tmp_data = X_test_test_all[j*batchte:,:,:]
             with open(game_files+'_te_'+str(j)+'.pkl', 'wb') as f:
                 pickle.dump([tmp_data], f, protocol=4)     
 
+        if True:
+            experiment_path = './test_samples/gt_'+str(n_roles)
+            experiment_path2 = './test_samples/input_'+str(n_roles)
+            if not os.path.exists(experiment_path):
+                os.makedirs(experiment_path)
+                os.makedirs(experiment_path2)
+
+            # Save samples to CSV        
+            for seq in range(X_test_test_all.shape[0]):
+                sample_ = X_test_test_all[seq].reshape((-1,23,n_feat))[:totalTimeSteps,:,:2] #
+                # ground truth
+                sample_path = os.path.join(experiment_path,str(seq)+'.csv')
+                df = pd.DataFrame(sample_.reshape(sample_.shape[0], -1), columns=[f'agent_{agent}_{coord}' for agent in range(sample_.shape[1]) for coord in ['x', 'y']])
+                df.to_csv(sample_path, index_label='time')
+                # test input
+                sample_path = os.path.join(experiment_path2,str(seq)+'.csv')
+                sample_ = sample_[:args.burn_in]
+                df = pd.DataFrame(sample_.reshape(sample_.shape[0], -1), columns=[f'agent_{agent}_{coord}' for agent in range(sample_.shape[1]) for coord in ['x', 'y']])
+
+                #df = pd.DataFrame()
+                #for t in range(args.burn_in):
+                #    for agent in range(sample_.shape[0]):
+                #        df.loc[t, f'agent_{agent}_x'] = sample_[agent, t, 0]
+                #        df.loc[t, f'agent_{agent}_y'] = sample_[agent, t, 1]
+                df.to_csv(sample_path, index_label='time')
+            print('Samples saved to {}'.format(sample_path))
+             
         del X_val_all, X_test_test_all, tmp_data
 
         print('save train and test sequences')
         with open(game_files+'_tr'+str(0)+'.pkl', 'rb') as f:
             X_all,len_seqs_val,len_seqs_test = np.load(f,allow_pickle=True) 
-              
+
+     
 
     # count batches 
     offSet_tr =  len(glob.glob(game_files+'_tr*.pkl'))
     # variables
-    featurelen = X_all.shape[3] #[0][0][0]#see get_sequences in sequencing.py
+    featurelen = X_all.shape[2] #[0][0][0]#see get_sequences in sequencing.py
     len_seqs_tr = batchSize*offSet_tr
     print('featurelen: '+str(featurelen)+' train_seqs: '+str(len_seqs_tr)+' val_seqs: '+str(len_seqs_val)+' test_seqs: '+str(len_seqs_test))
     
@@ -422,7 +447,7 @@ if __name__ == '__main__':
     args.rnn_dim = 100 # 100
     args.n_layers = 2
     args.rnn_micro_dim = args.rnn_dim
-    args.burn_in = 20 # int(totalTimeSteps/3)
+
     args.horizon = totalTimeSteps
     args.n_agents = len(activeRole)
     args.n_all_agents = 22 if args.data == 'soccer' else 10 
@@ -575,15 +600,9 @@ if __name__ == '__main__':
             train_loss,train_loss2 = run_epoch(train=1, rollout=False, hp=hyperparams)
             print('Train:\t'+loss_str(train_loss)+'|'+loss_str(train_loss2))
             
-            if not hyperparams['pretrain'] : #epoch % 5 == 3:
-                hyperparams['burn_in'] = args.burn_in
-                val_loss,val_loss2 = run_epoch(train=0, rollout=True, hp=hyperparams)
-                print('RO Val:\t'+loss_str(val_loss)+'|'+loss_str(val_loss2))
-                
-            else:
-                hyperparams['burn_in'] = args.horizon
-                val_loss,val_loss2 = run_epoch(train=0, rollout=False, hp=hyperparams)
-                print('Val:\t'+loss_str(val_loss)+'|'+loss_str(val_loss2))
+            hyperparams['burn_in'] = args.burn_in
+            val_loss,val_loss2 = run_epoch(train=0, rollout=True, hp=hyperparams)
+            print('RO Val:\t'+loss_str(val_loss)+'|'+loss_str(val_loss2))
 
             total_val_loss = sum(val_loss.values())
 
@@ -623,14 +642,11 @@ if __name__ == '__main__':
 
     # Load ground-truth states from test set
     loader = test_loader 
-    n_sample = 1
 
     if True:
         print('test sample')
         # Sample trajectory
-        samples = [np.zeros((args.horizon+1,args.n_agents,len_seqs_test,
-            featurelen)) for t in range(n_sample)]
-        loss_i = [{} for t in range(n_sample)]
+        samples = np.zeros((args.horizon,args.n_agents,len_seqs_test,featurelen)) 
         losses = {}
         losses2 = {}
 
@@ -642,34 +658,32 @@ if __name__ == '__main__':
                 # (batch, agents, time, feat) => (time, agents, batch, feat) 
             data = data.permute(2, 1, 0, 3)
             
-            sample, output, output2 = model.sample(data, rollout=True, burn_in=args.burn_in, CF_pred=False, n_sample=1, TEST = True)
+            sample, output, output2 = model.sample(data, rollout=True, burn_in=args.burn_in, n_sample=1, TEST = True, Challenge = args.Challenge)
 
-            samples[i][:,:,batch_idx*batchSize_test:(batch_idx+1)*batchSize_test] = sample.detach().cpu().numpy()[:-3]
+            samples[:,:,batch_idx*batchSize_test:(batch_idx+1)*batchSize_test] = sample.detach().cpu().numpy()[:-4]
 
             del sample 
-            for key in output:
-                if batch_idx == 0:
-                    losses[key] = np.zeros(1)
-                    losses2[key] = np.zeros((len_seqs_test))
-                losses[key] += np.sum(output[key].detach().cpu().numpy(),axis=1)
-                try: losses2[key][batch_idx*batchSize_test:(batch_idx+1)*batchSize_test] = output[key].detach().cpu().numpy()
-                except: import pdb; pdb.set_trace()
-                
-            for key in output2:
-                if batch_idx == 0:
-                    losses[key] = np.zeros(1)
-                    losses2[key] = np.zeros((len_seqs_test))
-                losses[key] += np.sum(output2[key].detach().cpu().numpy(),axis=1)
-                losses2[key][batch_idx*batchSize_test:(batch_idx+1)*batchSize_test] = output2[key].detach().cpu().numpy()
+            if not args.Challenge:
+                for key in output:
+                    if batch_idx == 0:
+                        losses[key] = np.zeros(1)
+                        losses2[key] = np.zeros((len_seqs_test))
+                    losses[key] += np.sum(output[key].detach().cpu().numpy(),axis=1)
+                    try: losses2[key][batch_idx*batchSize_test:(batch_idx+1)*batchSize_test] = output[key].detach().cpu().numpy()
+                    except: import pdb; pdb.set_trace()
+                    
+                for key in output2:
+                    if batch_idx == 0:
+                        losses[key] = np.zeros(1)
+                        losses2[key] = np.zeros((len_seqs_test))
+                    losses[key] += np.sum(output2[key].detach().cpu().numpy(),axis=1)
+                    losses2[key][batch_idx*batchSize_test:(batch_idx+1)*batchSize_test] = output2[key].detach().cpu().numpy()
 
-        for key in losses:
-            loss_i[i][key] = losses[key][i] / len(test_loader.dataset)
-        print('Test sample '+str(i)+':\t'+loss_str(loss_i[i]))
 
         epoch_time = time.time() - start_time
         print('Time:\t {:.3f}'.format(epoch_time)) # Sample {} r*n_smp_b,
             
-        if True: # create Mean + SD Tex Table for positions------------------------------------------------
+        if not args.Challenge: # create Mean + SD Tex Table for positions------------------------------------------------
             avgL2_m = {}
             avgL2_sd = {}
             for key in losses2:
@@ -682,25 +696,22 @@ if __name__ == '__main__':
                 +' $' + '{:.2f}'.format(avgL2_m['e_pos'])+' \pm '+'{:.2f}'.format(avgL2_sd['e_pos'])+'$ &'
                 +' $' + '{:.2f}'.format(avgL2_m['e_vel'])+' \pm '+'{:.2f}'.format(avgL2_sd['e_vel'])+'$ &'
                 ) 
-            print('(max):'
-                +' $' + '{:.2f}'.format(avgL2_m['e_pmax'])+' \pm '+'{:.2f}'.format(avgL2_sd['e_pmax'])+'$ &'
-                +' $' + '{:.2f}'.format(avgL2_m['e_vmax'])+' \pm '+'{:.2f}'.format(avgL2_sd['e_vmax'])+'$ &'
+            print('(endpoint):'
+                +' $' + '{:.2f}'.format(avgL2_m['e_e_p'])+' \pm '+'{:.2f}'.format(avgL2_sd['e_e_p'])+'$ &'
+                +' $' + '{:.2f}'.format(avgL2_m['e_e_v'])+' \pm '+'{:.2f}'.format(avgL2_sd['e_e_v'])+'$ &'
                 ) 
-            
-        # Save samples
-        experiment_path = './results'
-        if not os.path.exists(experiment_path):
-            os.makedirs(experiment_path)
 
-        # Save samples to CSV        
-        for seq in range(samples[0].shape[2]):
-            sample_ = samples[0][:args.burn_in, :, seq] #
-            sample_path = os.path.join(experiment_path, 'result_'+str(seq)+'.csv')
-            df = pd.DataFrame()
-            for t in range(sample_.shape[0]):
-                for agent in range(sample_.shape[1]):
-                    df.loc[t, f'agent_{agent}_x'] = sample_[t, agent, 0]
-                    df.loc[t, f'agent_{agent}_y'] = sample_[t, agent, 1]
-            df.to_csv(sample_path, index_label='time')
-        print('Samples saved to {}'.format(sample_path))
+        if args.Challenge:    
+            # Save samples
+            experiment_path = './results/test_'+str(n_roles)+'/submission'
+            if not os.path.exists(experiment_path):
+                os.makedirs(experiment_path)
+
+            # Save samples to CSV        
+            for seq in range(samples.shape[2]):
+                sample_ = samples[:, 0, seq].reshape((-1,23,n_feat))[:,:,:2] #
+                sample_path = os.path.join(experiment_path, str(seq)+'.csv')
+                df = pd.DataFrame(sample_.reshape(sample_.shape[0], -1), columns=[f'agent_{agent}_{coord}' for agent in range(sample_.shape[1]) for coord in ['x', 'y']])
+                df.to_csv(sample_path, index_label='time')
+            print('Samples saved to {}'.format(experiment_path))
         import pdb; pdb.set_trace()

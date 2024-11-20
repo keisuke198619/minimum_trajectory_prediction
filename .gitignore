@@ -3,7 +3,7 @@
 __pycache__/
 log/*
 data/*
-archive/*
+test_samples/*
 results/*
 weights/*
 slurm-*

@@ -43,34 +43,9 @@ def cudafy_list(states):
         states[i] = states[i].cuda()
     return states
 
-
-def index_by_agent(states, n_agents):
-    x = states[1:,:,:2*n_agents].clone()
-    x = x.view(x.size(0), x.size(1), n_agents, -1).transpose(1,2)
-    return x
-
-
-def get_macro_ohe(macro, n_agents, M):
-    macro_ohe = torch.zeros(macro.size(0), n_agents, macro.size(1), M)
-    for i in range(n_agents):
-        macro_ohe[:,i,:,:] = one_hot_encode(macro[:,:,i].data, M)
-    if macro.is_cuda:
-        macro_ohe = macro_ohe.cuda()
-
-    return macro_ohe
-
-
 ######################################################################
 ############################## GAUSSIAN ##############################
 ######################################################################
-
-
-def sample_gauss(mean, std):
-    eps = torch.FloatTensor(std.size()).normal_()
-    if mean.is_cuda:
-        eps = eps.cuda()
-    return eps.mul(std).add_(mean)
-
 
 def nll_gauss(mean, std, x, pow=False,Sum=True):
     pi = torch.FloatTensor([math.pi])
@@ -84,22 +59,6 @@ def nll_gauss(mean, std, x, pow=False,Sum=True):
     nll = 0.5 * torch.sum(nll_element) if Sum else 0.5 * torch.sum(nll_element,1)
     return nll
     
-
-def kld_gauss(mean_1, std_1, mean_2, std_2, Sum=True):
-    kld_element =  (2 * torch.log(std_2) - 2 * torch.log(std_1) + 
-        (std_1.pow(2) + (mean_1 - mean_2).pow(2)) /
-        std_2.pow(2) - 1)
-    kld = 0.5 * torch.sum(kld_element) if Sum else 0.5 * torch.sum(kld_element,1)    
-    return kld
-
-
-def entropy_gauss(std, scale=1):
-    """Computes gaussian differential entropy."""
-    pi, e = torch.FloatTensor([math.pi]), torch.FloatTensor([math.e])
-    if std.is_cuda:
-        pi, e = pi.cuda(), e.cuda()
-    return 0.5 * torch.sum(scale*torch.log(2*pi*e*std))
-
     
 def batch_error(predict, true, Sum=True, sqrt=True, diff=True):
     # error = torch.sum(torch.sum((predict[:,:2] - true[:,:2]),1))
@@ -113,49 +72,6 @@ def batch_error(predict, true, Sum=True, sqrt=True, diff=True):
         error = torch.sum(error)
     return error
 
-######################################################################
-############### sample_gumbel_softmax ################################
-######################################################################
-
-def sample_gumbel(shape, eps=1e-20):
-    device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    unif = torch.rand(*shape).to(device)
-    g = -torch.log(-torch.log(unif + eps))
-    return g
-
-def sample_gumbel_softmax(logits, temperature):
-    """
-        Input:
-        logits: Tensor of log probs, shape = BS x k
-        temperature = scalar
-        
-        Output: Tensor of values sampled from Gumbel softmax.
-                These will tend towards a one-hot representation in the limit of temp -> 0
-                shape = BS x k
-    """
-    g = sample_gumbel(logits.shape)
-    h = (g + logits)/temperature
-    h_max = h.max(dim=-1, keepdim=True)[0]
-    h = h - h_max
-    cache = torch.exp(h)
-    y = cache / cache.sum(dim=-1, keepdim=True)
-    return y
-######################################################################
-############################## BODY ##################################
-######################################################################
-
-def vel_cost(next_vel, vel_bound):
-    # ReLu-like velocity cost function 
-    diff_vel = next_vel-vel_bound
-    loc = (diff_vel>0).nonzero()
-    return torch.sum(diff_vel[loc])
-
-def acc_cost(next_vel, current_abs_vel, fs, acc_bound):
-    # ReLu-like acceleration cost function 
-    next_abs_vel = torch.sqrt(torch.sum((next_vel).pow(2),1))
-    diff_vel = next_abs_vel - (current_abs_vel+acc_bound*fs)
-    loc = (diff_vel>0).nonzero()
-    return torch.sum(diff_vel[loc])
 
 ######################################################################
 ############################## ROLE OUT ##############################
@@ -182,49 +98,44 @@ def calc_dist_cos_sin(rolePos,refPos,batchSize):
     return rolefeat
 
 def roll_out(y_t,y_t_1,prediction_all,n_roles,n_feat,ball_dim,fs,batchSize,i): # update feature vector using next_prediction
-    '''
-    input: 
-        prev_feature & next_feature: see get_sequences_Le in sequencing.py
-        next_prediction: xy position or velocity (n_pl*2,0) 
-        roleOrder: scalar (1,0)
-    output:
-        new_feature_vector
-    global: 
-        k_nearest
-    '''
+
     prev_feature = y_t
     next_feature = y_t_1
     next_vel = prediction_all[:,:,:2]
 
-    roleOrder = i
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    # batchSize = prev_feature.shape[0]
-    n_feat_all = prev_feature.shape[1]
     
     if n_roles >= 10: # soccer
-        n_all_agents = 22
+        n_all_agents = 23 if n_roles == 23 else 22
+        n_all_agents_ = 22
         n_half_agents = 11
         goalPosition = torch.tensor([52.5,0])
     n_feat_player = n_feat*n_all_agents
     goalPosition = goalPosition.repeat(batchSize, 1)
     
     next_current = next_feature[:,0:n_feat_player] 
-    ball = next_feature[:,n_feat_player:n_feat_player+ball_dim]  
+    
 
     legacy_next = next_current.reshape(batchSize,n_all_agents,n_feat) 
-    new_matrix = torch.zeros((batchSize,n_all_agents,n_feat)).to(device) 
-    teammateList = list(range(n_half_agents)) 
-    opponentList = list(range(n_half_agents,n_all_agents))  
+    new_matrix = torch.zeros((batchSize,n_all_agents_,n_feat)).to(device) 
+    if i < 11 or i == 22:
+        teammateList = list(range(n_half_agents)) 
+        opponentList = list(range(n_half_agents,n_all_agents_))  
+    elif i < 22:
+        teammateList = list(range(n_half_agents,n_all_agents_)) 
+        opponentList = list(range(n_half_agents))
 
     roleOrderList = [role for role in range(n_roles)]
     role_long = torch.zeros((batchSize,n_feat)).to(device)
-    teammateList.remove(roleOrder)
+    if i < 22:
+        teammateList.remove(i)
 
     # fix role vector
-    role_long[:,2:4] = next_vel[:,roleOrder,:]
-    role_long[:,0:2] = prev_feature[:,roleOrder*n_feat:(roleOrder*n_feat+2)] + prev_feature[:,roleOrder*n_feat+2:(roleOrder*n_feat+4)]*fs 
+    role_long[:,2:4] = next_vel[:,i,:]
+    role_long[:,0:2] = prev_feature[:,i*n_feat:(i*n_feat+2)] + prev_feature[:,i*n_feat+2:(i*n_feat+4)]*fs 
 
-    new_matrix[:,roleOrder,:] = role_long
+    if n_roles < 23:
+        new_matrix[:,i,:] = role_long
 
     # fix all teammates vector
     for teammate in teammateList:
@@ -239,30 +150,93 @@ def roll_out(y_t,y_t_1,prediction_all,n_roles,n_feat,ball_dim,fs,batchSize,i): #
 
     for opponent in opponentList: 
         player = legacy_next[:,opponent,:]
-        new_matrix[:,opponent,:] = player
+        try: new_matrix[:,opponent,:] = player
+        except: import pdb; pdb.set_trace()
 
-    # output
-    new_feature_vector = torch.cat([torch.reshape(new_matrix,(batchSize,n_all_agents*n_feat)), ball ],dim=1) 
+    
+    if n_roles == 23:
+        ball = next_feature[:,88:88+ball_dim]  
+        if i == 22:
+            ball[:,2:4] = next_vel[:,i,:]
+            ball[:,0:2] = prev_feature[:,i*n_feat:(i*n_feat+2)] + prev_feature[:,i*n_feat+2:(i*n_feat+4)]*fs 
+        new_feature_vector = torch.cat([torch.reshape(new_matrix,(batchSize,n_all_agents_*n_feat)), ball ],dim=1) 
+
+    else:
+        ball = next_feature[:,n_feat_player:n_feat_player+ball_dim]  
+        new_feature_vector = torch.cat([torch.reshape(new_matrix,(batchSize,n_all_agents*n_feat)), ball ],dim=1) 
 
     return new_feature_vector
 
-######################################################################
-########################## MISCELLANEOUS #############################
-######################################################################
+def roll_out_test(y_t,y_t_1,prediction_all,n_roles,n_feat,ball_dim,fs,batchSize): # update feature vector using next_prediction
+
+    prev_feature = y_t
+    next_feature = y_t_1
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    next_vel = prediction_all[:,:,:2].to(device) 
+
+    if n_roles >= 10: # soccer
+        n_all_agents = 23 
+    
+    prev_feature_ = prev_feature[0].reshape(batchSize,23,n_feat)
+    next_position = prev_feature_[:,:,:2] + prev_feature_[:,:,2:]*fs
+    if n_roles == 23:
+        next_velocity = next_vel.reshape(batchSize,n_all_agents,2)
+    else:
+        next_vel_remain = next_feature.reshape(batchSize,n_all_agents,n_feat)
+        next_velocity = torch.cat([next_vel,next_vel_remain[:,n_roles:,2:]],1)
+    new_feature_vector = torch.cat([next_position,next_velocity],dim=2).reshape(batchSize,n_all_agents*n_feat)
 
 
-def one_hot_encode(inds, N):
-    dims = [inds.size(i) for i in range(len(inds.size()))]
-    inds = inds.unsqueeze(-1).cpu().long()
-    dims.append(N)
-    ret = torch.zeros(dims)
-    ret.scatter_(-1, inds, 1)
-    return ret
+    '''next_current = next_feature[:,0:n_feat_player] 
+    
 
+    legacy_next = next_current.reshape(batchSize,n_all_agents,n_feat) 
+    new_matrix = torch.zeros((batchSize,n_all_agents_,n_feat)).to(device) 
+    if i < 11 or i == 22:
+        teammateList = list(range(n_half_agents)) 
+        opponentList = list(range(n_half_agents,n_all_agents_))  
+    elif i < 22:
+        teammateList = list(range(n_half_agents,n_all_agents_)) 
+        opponentList = list(range(n_half_agents))
 
-def sample_multinomial(probs):
-    inds = torch.multinomial(probs, 1).data.cpu().long().squeeze()
-    ret = one_hot_encode(inds, probs.size(-1))
-    if probs.is_cuda:
-        ret = ret.cuda()
-    return ret
+    roleOrderList = [role for role in range(n_roles)]
+    role_long = torch.zeros((batchSize,n_feat)).to(device)
+    if i < 22:
+        teammateList.remove(i)
+
+    # fix role vector
+    role_long[:,2:4] = next_vel[:,i,:]
+    role_long[:,0:2] = prev_feature[:,i*n_feat:(i*n_feat+2)] + prev_feature[:,i*n_feat+2:(i*n_feat+4)]*fs 
+
+    if n_roles < 23:
+        new_matrix[:,i,:] = role_long
+
+    # fix all teammates vector
+    for teammate in teammateList:
+        player = legacy_next[:,teammate,:]
+        if teammate in roleOrderList: # if the teammate is one of the active players: e.g. eliminate goalkeepers
+            teamRoleInd = roleOrderList.index(teammate)
+            
+            player[:,2:4] = next_vel[:,teamRoleInd,:]
+            player[:,0:2] = prev_feature[:,teamRoleInd*n_feat:(teamRoleInd*n_feat+2)] + prev_feature[:,teamRoleInd*n_feat+2:(teamRoleInd*n_feat+4)]*fs           
+
+        new_matrix[:,teammate,:] = player
+
+    for opponent in opponentList: 
+        player = legacy_next[:,opponent,:]
+        try: new_matrix[:,opponent,:] = player
+        except: import pdb; pdb.set_trace()
+
+    
+    if n_roles == 23:
+        ball = next_feature[:,88:88+ball_dim]  
+        if i == 22:
+            ball[:,2:4] = next_vel[:,i,:]
+            ball[:,0:2] = prev_feature[:,i*n_feat:(i*n_feat+2)] + prev_feature[:,i*n_feat+2:(i*n_feat+4)]*fs 
+        new_feature_vector = torch.cat([torch.reshape(new_matrix,(batchSize,n_all_agents_*n_feat)), ball ],dim=1) 
+
+    else:
+        ball = next_feature[:,n_feat_player:n_feat_player+ball_dim]  
+        new_feature_vector = torch.cat([torch.reshape(new_matrix,(batchSize,n_all_agents*n_feat)), ball ],dim=1) '''
+
+    return new_feature_vector

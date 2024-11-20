@@ -1,9 +1,9 @@
 import torch
 import torch.nn as nn
 
-from rnn.utils import parse_model_params, get_params_str, cudafy_list, index_by_agent, get_macro_ohe
-from rnn.utils import sample_gauss, nll_gauss, kld_gauss, sample_multinomial
-from rnn.utils import batch_error, roll_out, sample_gumbel, sample_gumbel_softmax
+from rnn.utils import get_params_str, cudafy_list
+from rnn.utils import nll_gauss
+from rnn.utils import batch_error, roll_out, roll_out_test
 import torch.nn.functional as F
 
 # Keisuke Fujii, 2020
@@ -48,12 +48,18 @@ class RNN_GAUSS(nn.Module):
         print('batchnorm = '+str(self.batchnorm))
 
         # network parameters 
+        if n_agents <= 11:
+            self.n_network = 1
+        elif n_agents <= 22:
+            self.n_network = 2
+        elif n_agents == 23:
+            self.n_network = 3
 
         # RNN
         if self.batchnorm:
-            self.bn_dec = nn.ModuleList([nn.BatchNorm1d(h_dim) for i in range(n_agents)]) 
+            self.bn_dec = nn.ModuleList([nn.BatchNorm1d(h_dim) for i in range(self.n_network)]) 
 
-        in_enc = y_dim+rnn_dim           
+        in_enc = x_dim+y_dim+rnn_dim           
 
         self.dec = nn.ModuleList([nn.Sequential(
             nn.Linear(rnn_dim, h_dim),
@@ -61,11 +67,11 @@ class RNN_GAUSS(nn.Module):
             nn.Dropout(dropout),
             nn.Linear(h_dim, h_dim),
             nn.ReLU(),
-            nn.Dropout(dropout)) for i in range(n_agents)])
-        self.dec_mean = nn.ModuleList([nn.Linear(h_dim, x_dim) for i in range(n_agents)])
+            nn.Dropout(dropout)) for i in range(self.n_network)])
+        self.dec_mean = nn.ModuleList([nn.Linear(h_dim, x_dim) for i in range(self.n_network)])
         self.dec_std = nn.ModuleList([nn.Sequential(
             nn.Linear(h_dim, x_dim),
-            nn.Softplus()) for i in range(n_agents)])
+            nn.Softplus()) for i in range(self.n_network)])
         
         self.dec = nn.ModuleList([nn.Sequential(
             nn.Linear(rnn_dim, h_dim),
@@ -73,14 +79,14 @@ class RNN_GAUSS(nn.Module):
             nn.Dropout(dropout),
             nn.Linear(h_dim, h_dim),
             nn.ReLU(),
-            nn.Dropout(dropout)) for i in range(n_agents)])
+            nn.Dropout(dropout)) for i in range(self.n_network)])
         self.dec_mean = nn.ModuleList(
-            [nn.Linear(h_dim, x_dim) for i in range(n_agents)])
+            [nn.Linear(h_dim, x_dim) for i in range(self.n_network)])
         self.dec_std = nn.ModuleList([nn.Sequential(
             nn.Linear(h_dim, x_dim),
-            nn.Softplus()) for i in range(n_agents)])
+            nn.Softplus()) for i in range(self.n_network)])
 
-        self.rnn = nn.ModuleList([nn.GRU(in_enc, rnn_dim, n_layers) for i in range(n_agents)])
+        self.rnn = nn.ModuleList([nn.GRU(in_enc, rnn_dim, n_layers) for i in range(self.n_network)])
         # self.rnn = nn.ModuleList([nn.GRU(y_dim, rnn_dim, n_layers) for i in range(n_agents)])
 
     def weights_init(self,m):
@@ -113,14 +119,21 @@ class RNN_GAUSS(nn.Module):
         batchSize = states.size(2)
         len_time = self.params['horizon'] #states.size(0)
 
-        h = [torch.zeros(self.params['n_layers'], batchSize, self.params['rnn_dim']) for i in range(n_agents)]
+        h = [torch.zeros(self.params['n_layers'], batchSize, self.params['rnn_dim']) for i in range(self.n_network)]
         if self.params['cuda']:
             h = cudafy_list(h)
+        states = states.repeat(1,n_agents,1,1).clone()
 
         for t in range(len_time):
             prediction_all = torch.zeros(batchSize, n_agents, x_dim)
 
             for i in range(n_agents):  
+                if i <= 11:
+                    i_network = 0
+                elif i <= 22:
+                    i_network = 1
+                elif i == 23:
+                    i_network = 2
                 y_t = states[t][i].clone() # state
                 x_t0 = states[t+1][i][:,n_feat*i:n_feat*i+n_feat].clone() 
 
@@ -133,12 +146,12 @@ class RNN_GAUSS(nn.Module):
 
                 # RNN
                 state_in = y_t
-                enc_in = torch.cat([state_in, h[i][-1]], 1)
+                enc_in = torch.cat([current_vel, state_in, h[i_network][-1]], 1)
 
-                dec_t = self.dec[i](h[i][-1])
-                dec_mean_t = self.dec_mean[i](dec_t)
-                dec_std_t = self.dec_std[i](dec_t)
-                _, h[i] = self.rnn[i](enc_in.unsqueeze(0), h[i])
+                dec_t = self.dec[i_network](h[i_network][-1])
+                dec_mean_t = self.dec_mean[i_network](dec_t)
+                dec_std_t = self.dec_std[i_network](dec_t)
+                _, h[i_network] = self.rnn[i_network](enc_in.unsqueeze(0), h[i_network])
 
                 # objective function
                 out['L_rec'] += nll_gauss(dec_mean_t, dec_std_t, x_t)
@@ -156,35 +169,27 @@ class RNN_GAUSS(nn.Module):
                     out2['e_vel'] += batch_error(v_t1, v0_t1)
 
                     del v_t1, current_pos, next_pos
-            # role out
-            if t >= burn_in and rollout:
-                for i in range(n_agents):
-                    y_t = states[t][i].clone() # state
-                    y_t1i = states[t+1][i].clone() 
-                    states[t+1][i] = roll_out(y_t,y_t1i,prediction_all,
-                        n_agents,n_feat,ball_dim,fs,batchSize,i)
 
-        if burn_in==len_time:
-            out2['e_pos'] /= (len_time)*n_agents
-            out2['e_vel'] /= (len_time)*n_agents
-        else: 
-            out2['e_pos'] /= (len_time-burn_in)*n_agents
-            out2['e_vel'] /= (len_time-burn_in)*n_agents
+        out2['e_pos'] /= (len_time-burn_in)*n_agents
+        out2['e_vel'] /= (len_time-burn_in)*n_agents
 
         out['L_rec'] /= (len_time)*n_agents
         return out, out2
 
-    def sample(self, states, rollout, burn_in=0, L_att = False, CF_pred=False, n_sample=1,TEST=False):
+    def sample(self, states, rollout, burn_in=0, n_sample=1,TEST=False,Challenge=False):
         device = 'cuda' if torch.cuda.is_available() else 'cpu'
         out = {}
         out2 = {}
         batchSize = states.size(2)
         len_time = self.params['horizon'] #states.size(0)
-        out['L_rec'] = torch.zeros(n_sample).to(device) if not TEST else torch.zeros(n_sample,batchSize).to(device)
-        out2['e_pos'] = torch.zeros(n_sample).to(device) if not TEST else torch.zeros(n_sample,batchSize).to(device)
-        out2['e_vel'] = torch.zeros(n_sample).to(device) if not TEST else torch.zeros(n_sample,batchSize).to(device)
-        out2['e_pmax'] = torch.zeros(n_sample,batchSize,len_time).to(device) if len_time==burn_in else torch.zeros(n_sample,batchSize,len_time-burn_in).to(device)
-        out2['e_vmax'] = torch.zeros(n_sample,batchSize,len_time).to(device) if len_time==burn_in else torch.zeros(n_sample,batchSize,len_time-burn_in).to(device)
+
+
+        if not Challenge:
+            out['L_rec'] = torch.zeros(n_sample).to(device) if not TEST else torch.zeros(n_sample,batchSize).to(device)
+            out2['e_pos'] = torch.zeros(n_sample).to(device) if not TEST else torch.zeros(n_sample,batchSize).to(device)
+            out2['e_vel'] = torch.zeros(n_sample).to(device) if not TEST else torch.zeros(n_sample,batchSize).to(device)
+            out2['e_e_p'] = torch.zeros(n_sample).to(device) if not TEST else torch.zeros(n_sample,batchSize).to(device)
+            out2['e_e_v'] = torch.zeros(n_sample).to(device) if not TEST else torch.zeros(n_sample,batchSize).to(device)
         
         Sum = True if not TEST else False
 
@@ -199,11 +204,11 @@ class RNN_GAUSS(nn.Module):
         batchSize = states.size(2)
         len_time = self.params['horizon'] #states.size(0)
 
-        h = [[torch.zeros(self.params['n_layers'], batchSize, self.params['rnn_dim']) for _ in range(n_sample)] for i in range(n_agents)]
+        h = [[torch.zeros(self.params['n_layers'], batchSize, self.params['rnn_dim']) for _ in range(n_sample)] for i in range(self.n_network)]
         
         if self.params['cuda']:
             states = cudafy_list(states)
-            for i in range(n_agents):
+            for i in range(self.n_network):
                 h[i] = cudafy_list(h[i])
                 self.rnn[i] = self.rnn[i].to(device)
                 self.dec[i] = self.dec[i].to(device)
@@ -212,6 +217,7 @@ class RNN_GAUSS(nn.Module):
                 if self.batchnorm:
                     self.bn_dec[i] = self.bn_dec[i].to(device)   
 
+        states = states.repeat(1,n_agents,1,1).clone()
         states_n = [states.clone() for _ in range(n_sample)]
 
         for t in range(len_time):
@@ -219,78 +225,81 @@ class RNN_GAUSS(nn.Module):
                 prediction_all = torch.zeros(batchSize, n_agents, x_dim)
 
                 for i in range(n_agents):
+                    if i <= 11:
+                        i_network = 0
+                    elif i <= 22:
+                        i_network = 1
+                    elif i == 23:
+                        i_network = 2
+
                     y_t = states_n[n][t][i].clone() # states[t][i].clone() # state
 
-                    x_t0 = states[t+1][i][:,n_feat*i:n_feat*i+n_feat].clone() 
+                    if not Challenge:
+                        x_t0 = states[t+1][i][:,n_feat*i:n_feat*i+n_feat].clone() 
 
-                    # action
-                    x_t = x_t0[:,2:4] # vel 
+                        # action
+                        x_t = x_t0[:,2:4] # vel 
 
                     # for evaluation
                     current_pos = y_t[:,n_feat*i:n_feat*i+2]
                     current_vel = y_t[:,n_feat*i+2:n_feat*i+4]    
-                    v0_t1 = x_t0[:,2:4]
+                    if not Challenge:
+                        v0_t1 = x_t0[:,2:4]
 
                     state_in = y_t
-                    enc_in = torch.cat([state_in, h[i][n][-1]], 1)
+                    enc_in = torch.cat([current_vel, state_in, h[i_network][n][-1]], 1)
 
-                    dec_t = self.dec[i](h[i][n][-1])
+                    dec_t = self.dec[i_network](h[i_network][n][-1])
                     if self.batchnorm:
-                        dec_t = self.bn_dec[i](dec_t) 
-                    dec_mean_t = self.dec_mean[i](dec_t)
-                    dec_std_t = self.dec_std[i](dec_t)
+                        dec_t = self.bn_dec[i_network](dec_t) 
+                    dec_mean_t = self.dec_mean[i_network](dec_t)
+                    dec_std_t = self.dec_std[i_network](dec_t)
                     # objective function
-                    out['L_rec'][n] += nll_gauss(dec_mean_t, dec_std_t, x_t, Sum)
+                    if not Challenge:
+                        out['L_rec'][n] += nll_gauss(dec_mean_t, dec_std_t, x_t, Sum)
 
-                    # body constraint
                     v_t1 = dec_mean_t[:,:2]   
                     next_pos = current_pos + current_vel*fs
 
                     if t >= burn_in: 
                         # prediction
                         prediction_all[:,i,:] = dec_mean_t[:,:x_dim]
+                        if not Challenge:
+                            # error (not used when backward)
+                            out2['e_pos'][n] += batch_error(next_pos, x_t0[:,:2], Sum)
+                            out2['e_vel'][n] += batch_error(v_t1, v0_t1, Sum)
+                            if t == len_time-1:
+                                out2['e_e_p'][n] += batch_error(next_pos, x_t0[:,:2], Sum)
+                                out2['e_e_v'][n] += batch_error(v_t1, v0_t1, Sum)
 
-                        # error (not used when backward)
-                        out2['e_pos'][n] += batch_error(next_pos, x_t0[:,:2], Sum)
-                        out2['e_vel'][n] += batch_error(v_t1, v0_t1, Sum)
+                        del current_pos, current_vel
 
-                        if burn_in==len_time:
-                            out2['e_pmax'][n,:,t] += batch_error(next_pos, x_t0[:,:2], Sum=False)
-                            # TBD
-                        else:
-                            out2['e_pmax'][n,:,t-burn_in] += batch_error(next_pos, x_t0[:,:2], Sum=False)
-                            out2['e_vmax'][n,:,t-burn_in] += batch_error(v_t1, v0_t1, Sum=False)
-
-                        del current_pos, current_vel, next_pos
-
-                    _, h[i][n] = self.rnn[i](enc_in.unsqueeze(0), h[i][n])
+                    _, h[i_network][n] = self.rnn[i_network](enc_in.unsqueeze(0), h[i_network][n])
 
                 # role out
                 if t >= burn_in and rollout:
+                    y_t = states_n[n][t].clone() 
+                    if n_agents < 23:
+                        y_t1_ = states_n[n][t+1][i].clone()  
+                    else:
+                        y_t1_ = None
+                    states_new = roll_out_test(y_t,y_t1_,prediction_all,n_agents,n_feat,ball_dim,fs,batchSize)
                     for i in range(n_agents):
-                        y_t = states_n[n][t][i].clone() # state
-                        y_t1i = states_n[n][t+1][i].clone() 
-                        states_n[n][t+1][i] = roll_out(y_t,y_t1i,prediction_all,
-                                n_agents,n_feat,ball_dim,fs,batchSize,i)
-
-        if burn_in==len_time:
-            out2['e_pos'] /= (len_time)*n_agents
-            out2['e_vel'] /= (len_time)*n_agents
-        else: 
+                        states_n[n][t+1][i] = states_new.clone()
+        
+        if not Challenge:
             for n in range(n_sample):
-                out2['e_pos'][n] /= (len_time-burn_in)*n_agents
-                out2['e_vel'][n] /= (len_time-burn_in)*n_agents
-            if not TEST: # validation
-                out2['e_pmax'] = torch.sum(torch.max(out2['e_pmax']/n_agents,dim=2)[0])
-                out2['e_vmax'] = torch.sum(torch.max(out2['e_vmax']/n_agents,dim=2)[0])
-            else:
-                out2['e_pmax'] = torch.max(out2['e_pmax']/n_agents,dim=2)[0] 
-                out2['e_vmax'] = torch.max(out2['e_vmax']/n_agents,dim=2)[0] 
+                #if torch.sum(non_nan) == (len_time0-burn_in)*batchSize:
+                if not TEST: # validation
+                    out2['e_pos'][n] /= (len_time-burn_in)*n_agents
+                    out2['e_vel'][n] /= (len_time-burn_in)*n_agents
+                    out2['e_e_p'][n] /= n_agents
+                    out2['e_e_v'][n] /= n_agents
+                else:
+                    out2['e_pos'][n] /= (len_time-burn_in)*n_agents
+                    out2['e_vel'][n] /= (len_time-burn_in)*n_agents
+                    out2['e_e_p'][n] /= n_agents
+                    out2['e_e_v'][n] /= n_agents
 
-        for n in range(n_sample):
-            out['L_rec'][n] /= (len_time)*n_agents
-
-        if n_sample > 1:
-            states = states_n
-
+        states = states_n[0]
         return states, out, out2

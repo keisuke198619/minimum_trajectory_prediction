@@ -28,6 +28,7 @@ class Dataset(Dataset):
             batch_index = index % self.batchsize
             with open(self.game_files+'_tr'+str(batch_no)+'.pkl', 'rb') as f:
                 data,_,_ = cloudpickle.load(f) # ,allow_pickle=True
+            data = [data]    
         else:
             J = 4 if self.n_GorS == 1 else 8
             batch_no = index // int(self.len_seqs/J)
@@ -40,12 +41,8 @@ class Dataset(Dataset):
             with open(filename+'_'+str(batch_no)+'.pkl', 'rb') as f:
                 data = cloudpickle.load(f) 
 
-        if len(data) == 1: # tentative
-            data = data[0]
-
         self.data = torch.Tensor(data)
         self.data = self.data.permute(1, 0, 2, 3) # batch,agents,length,dim
-
 
         return self.data[batch_index] # data[index] 
 

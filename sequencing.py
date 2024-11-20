@@ -66,51 +66,50 @@ def get_sequences(single_game, policy, sequence_length, overlap, n_pl, n_feat):
  
     '''
 
-    X_all = []
-    Y_all = []   
+    # X_all = []
+    # Y_all = []   
 
     npl = n_pl*2
     index0 = np.array(range(single_game[0].shape[1])).astype(int) # length of features
 
-    for p in policy:
-        X = []
-        Y = []
-        # create index
-        index = [] 
-        if n_pl == 11:
-            for pl in range(npl):
-                index = np.append(index,index0[pl*2:pl*2+2]) # positions 3-4
-                index = np.append(index,index0[2204+pl*2:2204+pl*2+2]) # velocities 5-6
-            
-            index = np.append(index,index0[44:46]) # ball positions
-            index = np.append(index,index0[2202:2204]) # ball velocity
+    #️⃣ for p in policy:
+    X = []
+    Y = []
+    # create index
+    index = [] 
+    if n_pl == 11:
+        for pl in range(npl):
+            index = np.append(index,index0[pl*2:pl*2+2]) # positions 3-4
+            index = np.append(index,index0[2204+pl*2:2204+pl*2+2]) # velocities 5-6
+        
+        index = np.append(index,index0[44:46]) # ball positions
+        index = np.append(index,index0[2202:2204]) # ball velocity
 
-        index = index.astype(int)
-        #index = np.array([p*2,p*2+1, \
-        #    25+p,35+p,45+p,55+p,65+p,75+p,85+p,95+p,\
-        #    p*2+105,p*2+106])
-        for i in single_game:
-            i_len = len(i)
-            i2 = np.array(i) # copy
-            sequence0 = np.zeros((i_len,index.shape[0]))
-            
-            for t in range(i_len):
-                sequence0[t,:] = i2[t,index].T
-            
-            # create sequences
-            if i_len >= sequence_length:
-                sequences0 = [sequence0[-sequence_length:,:] if j + sequence_length > i_len-1 else sequence0[j:j+sequence_length,:] \
-                    for j in range(0, i_len-overlap, sequence_length-overlap)] # for the states
-                #sequences = [np.array(i[-sequence_length:]) if j + sequence_length > i_len-1 else np.array(i[j:j+sequence_length]) \
-                #    for j in range(0, i_len-overlap, sequence_length-overlap)] # for the actions     
+    index = index.astype(int)
+    #index = np.array([p*2,p*2+1, \
+    #    25+p,35+p,45+p,55+p,65+p,75+p,85+p,95+p,\
+    #    p*2+105,p*2+106])
+    for i in single_game:
+        i_len = len(i)
+        i2 = np.array(i) # copy
+        sequence0 = np.zeros((i_len,index.shape[0]))
+        
+        for t in range(i_len):
+            sequence0[t,:] = i2[t,index].T
+        
+        # create sequences
+        if i_len >= sequence_length:
+            sequences0 = [sequence0[-sequence_length:,:] if j + sequence_length > i_len-1 else sequence0[j:j+sequence_length,:] \
+                for j in range(0, i_len-overlap, sequence_length-overlap)] # for the states
 
-                state = [np.roll(kk, -1, axis=0)[:-1, :] for kk in sequences0] # state: drop the last row as the rolled-back is not real
-                
-                action = [np.roll(kk[:, p*n_feat+3:p*n_feat+9], -1, axis=0)[:-1, :] for kk in sequences0] 
-                # sequences = [l[:-1, :] for l in sequences] # since target has dropped one then sequence also drop one
-                X += state  
-                Y += action  
-        X_all.append(X) 
-        Y_all.append(Y) 
-    return X_all, Y_all
+            state = [np.roll(kk, -1, axis=0)[:-1, :] for kk in sequences0] # state: drop the last row as the rolled-back is not real
+            
+            # action = [np.roll(kk[:, p*n_feat+3:p*n_feat+9], -1, axis=0)[:-1, :] for kk in sequences0] 
+            X += state  
+            # Y += action  
+
+    # X_all.append(X) 
+    # Y_all.append(Y) 
+    # return X_all, Y_all
+    return X 
 
