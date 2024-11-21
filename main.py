@@ -402,7 +402,7 @@ if __name__ == '__main__':
     len_seqs_tr = batchSize*offSet_tr
     print('featurelen: '+str(featurelen)+' train_seqs: '+str(len_seqs_tr)+' val_seqs: '+str(len_seqs_val)+' test_seqs: '+str(len_seqs_test))
     
-    # parameters for VRNN -----------------------------------
+    # parameters for RNN -----------------------------------
     init_filename0 = path_init+ 'sub' + str(args.fs) + '_' + str(n_roles)
     init_filename0 = init_filename0 + 'filt_'  
    
@@ -698,8 +698,7 @@ if __name__ == '__main__':
                 +' $' + '{:.2f}'.format(avgL2_m['e_e_p'])+' \pm '+'{:.2f}'.format(avgL2_sd['e_e_p'])+'$ &'
                 +' $' + '{:.2f}'.format(avgL2_m['e_e_v'])+' \pm '+'{:.2f}'.format(avgL2_sd['e_e_v'])+'$ &'
                 ) 
-            import pdb; pdb.set_trace()
-        if args.Challenge:    
+        else: # challenge   
             # Save samples
             experiment_path = './results/test_'+str(n_roles)+'/submission'
             if not os.path.exists(experiment_path):
