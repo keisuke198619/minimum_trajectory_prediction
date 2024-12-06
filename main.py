@@ -693,7 +693,7 @@ if __name__ == '__main__':
             # Save samples to CSV        
             for seq in range(samples.shape[2]):
                 sample_ = samples[:, 0, seq].reshape((-1,23,n_feat))[:,:,:2] #
-                sample_path = os.path.join(experiment_path, str(seq)+'.csv')
+                sample_path = os.path.join(experiment_path, f'{seq+1:02}.csv')
                 df = pd.DataFrame(sample_.reshape(sample_.shape[0], -1), columns=[f'agent_{agent}_{coord}' for agent in range(sample_.shape[1]) for coord in ['x', 'y']])
                 df.to_csv(sample_path, index_label='time')
             print('Samples saved to {}'.format(experiment_path))

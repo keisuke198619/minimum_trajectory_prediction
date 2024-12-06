@@ -10,4 +10,4 @@ source $HOME/workspace4/virtualenvs/cause38/bin/activate
 python download.py --subpaths rc2021-roundrobin/normal/alice2021-helios2021 rc2021-roundrobin/normal/alice2021-hfutengine2021
 python main.py -t_step 50 --batchsize 64 --n_epoch 10 --model RNN_GAUSS --num_workers 0 --Sanity # --TEST
 python main.py -t_step 50 --batchsize 64 --n_epoch 10 --model RNN_GAUSS --num_workers 0 --challenge_data ./test_samples/input
-# python evaluation.py --submit ./results/test/submission --gt ./test_samples/gt 
+# python evaluation.py --submit ./results/test/submission --gt ./test_samples/gt --input ./test_samples/input 
