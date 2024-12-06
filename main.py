@@ -1,4 +1,5 @@
-import glob, os, time, math, warnings, copy
+import glob, os, time, math, warnings, copy, re
+from datetime import datetime
 import argparse
 import random
 import pickle
@@ -31,8 +32,10 @@ from sequencing import get_sequences
 # https://github.com/ezhan94/multiagent-programmatic-supervision
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--data', type=str, required=True)
-parser.add_argument('--n_GorS', type=int, required=True)
+parser.add_argument('--data', type=str, default='robocup2D')
+parser.add_argument('--data_dir', type=str, default='robocup2d_data')
+
+# parser.add_argument('--n_GorS', type=int, required=True)
 parser.add_argument('--n_roles', type=int, default=23)
 parser.add_argument('--val_devide', type=int, default=10)
 parser.add_argument('-t_step', '--totalTimeSteps', type=int, default=50)
@@ -46,8 +49,9 @@ parser.add_argument('--fs', type=int, default=10)
 parser.add_argument('--cont', action='store_true')
 parser.add_argument('--num_workers', type=int, default=0)
 parser.add_argument('--numProcess', type=int, default=16)
-parser.add_argument('--TEST', action='store_true')
-parser.add_argument('--Challenge', action='store_true')
+parser.add_argument('--TEST', action='store_true') 
+parser.add_argument('--challenge_data', type=str, default=None)
+# parser.add_argument('--Challenge', action='store_true')
 parser.add_argument('--Sanity', action='store_true')
 parser.add_argument('--res', action='store_true')
 parser.add_argument('--pretrain', type=int, default=0)
@@ -56,11 +60,12 @@ parser.add_argument('--drop_ind', action='store_true')
 args, _ = parser.parse_known_args()
 
 # directories
-main_dir = '../' # './'
-game_dir = main_dir+'data_'+args.data+'/'
-args.game_dir = game_dir
-Data = pd.read_pickle(game_dir+'train_data.pkl')
 path_init = './weights/' 
+if args.challenge_data is not None:
+    args.Challenge = True
+else:
+    args.Challenge = False
+    
 if args.Challenge:
     args.TEST = True
 
@@ -119,17 +124,15 @@ def loss_str(losses):
             ret += ' {}: {:.3f} |'.format(key, losses[key])
     return ret[:-2]
 
-def run_sanity(args,game_files):
-    for j in range(4):
-        with open(game_files+str(j)+'.pkl', 'rb') as f:
-            if j == 0:
-                data = np.load(f,allow_pickle=True)[0]
-            else:
-                tmp = np.load(f,allow_pickle=True)[0] 
-                data = np.concatenate([data,tmp],axis=1)            
+def run_sanity(args,test_loader):
+    data = []
+    for batch_idx, batch in enumerate(test_loader):
+        data.append(batch.numpy())
+    data = np.concatenate(data, axis=0)
+    data = data[:,0] 
 
     n_agents = args.n_agents
-    batchSize,_,x_dim = data.shape
+    batchSize,_,_ = data.shape
     n_feat = args.n_feat
     burn_in = args.burn_in
     fs = args.fs
@@ -205,207 +208,242 @@ if __name__ == '__main__':
     os.environ["OMP_NUM_THREADS"]=str(numProcess) 
     TEST = args.TEST
 
+    if not torch.cuda.is_available():
+        args.cuda = False
+        print('cuda is not used')
+    else:
+        args.cuda = True
+        print('cuda is used')
+
+    # Set manual seed
+    args.seed = 42
+    random.seed(args.seed)
+    np.random.seed(args.seed)
+    torch.manual_seed(args.seed)
+    if args.cuda:
+        torch.cuda.manual_seed(args.seed)
+
     # pre-process----------------------------------------------
     # acc = args.acc # output: 0: vel, 1: pos+vel, 2:vel+acc, 3: pos+vel+acc
     #args.hmm_iter = 500
     args.filter = True
 
     # all game ids file name, note that '/' or '\\' depends on the environment
-    all_games_id = [i.split(os.sep)[-1].split('.')[0] for i in glob.glob(game_dir+'/*.pkl')]
+    # all_games_id = [i.split(os.sep)[-1].split('.')[0] for i in glob.glob(game_dir+'/*.pkl')]
     global fs
     fs = 1/args.fs
     if args.data == 'soccer':
         n_pl = 11
-        subsample_factor = 10*fs        
-
-    args.subsample_factor = subsample_factor
+        
     event_threshold = args.event_threshold
     n_roles = args.n_roles
-    n_GorS = args.n_GorS # games if NBA and seqs if soccer
+    # n_GorS = args.n_GorS # games if NBA and seqs if soccer
     val_devide = args.val_devide
     batchSize = args.batchsize # 
     overlapWindow = args.overlap # 
     totalTimeSteps =  args.totalTimeSteps # 
     args.burn_in = 20 # int(totalTimeSteps/3)
 
-    # save the processed file to disk to avoid repeated work
-    game_file0 = './data/all_'+args.data+'_games_'+str(n_GorS)+'_'+str(n_roles)
+    file_paths = [os.path.join(args.data_dir, file) for file in os.listdir(args.data_dir)]
+    os.makedirs("./metadata", exist_ok=True)
 
-    game_file0 = game_file0 + '_filt'
+    def create_metadata(file_paths, total_time_steps, overlap, output_path):
+        """
+        Create metadata for play_on intervals and save it as a pickle file.
+        
+        Args:
+            file_paths (list): List of file paths to process.
+            output_path (str): Path to save the metadata.
+        """
+        total_time_steps += 2
+        metadata = []
+        for file_path in file_paths:
+            # Read only the playmode column to identify play_on intervals
+            playmode_col = pd.read_csv(file_path, usecols=['playmode']).playmode
+            play_on_indices = playmode_col[playmode_col == 'play_on'].index.tolist()
 
-    game_file0 = game_file0 + '/'
-    if not os.path.isdir(game_file0):
-        os.makedirs(game_file0)
+            # Find continuous play_on ranges
+            start_idx = play_on_indices[0]
+            for i in range(1, len(play_on_indices)):
+                if play_on_indices[i] != play_on_indices[i - 1] + 1:
+                    # End of a continuous range
+                    end_idx = play_on_indices[i - 1]
+                    if end_idx - start_idx + 1 >= total_time_steps:  # Check total length condition
+                        for j in range(start_idx, end_idx - total_time_steps + 1, total_time_steps - overlap):
+                            metadata.append({
+                                'file_path': file_path,
+                                'start_idx': j,
+                                'end_idx': j + total_time_steps
+                            })
+                    start_idx = play_on_indices[i]
 
-    game_files_pre = game_file0 + '_pre'
+            # Handle the last range
+            end_idx = play_on_indices[-1]
+            if end_idx - start_idx + 1 >= total_time_steps:
+                for j in range(start_idx, end_idx - total_time_steps + 1, total_time_steps - overlap):
+                    metadata.append({
+                        'file_path': file_path,
+                        'start_idx': j,
+                        'end_idx': j + total_time_steps
+                    })
+            
+        # Save metadata as a pickle file
+        with open(output_path, 'wb') as f:
+            pickle.dump(metadata, f)
+        print(f"Metadata saved to {output_path}")
+        return metadata
 
-    game_file0 = game_file0 + 'Fs' + str(args.fs) 
+    # update if input csv files are changed
+    if not os.path.exists("./metadata/metadata.pkl"):
+        print("Creating metadata...")
+        metadata = create_metadata(file_paths, args.totalTimeSteps, args.overlap, output_path="./metadata/metadata.pkl")
+    else:
+        print("Loading metadata...")
+        with open("./metadata/metadata.pkl", 'rb') as f:
+            metadata = pickle.load(f)
 
-    game_file0 = game_file0 + '_' + str(batchSize) + '_' + str(totalTimeSteps)
-    game_files = game_file0
-    game_files_val = game_file0 + '_val'+'.pkl'
-    game_files_te = game_file0 + '_te'+'.pkl'    
+        unique_file_paths = set(item['file_path'] for item in metadata)
+        if len(file_paths) != len(unique_file_paths):
+            print("Updating metadata...")
+            metadata = create_metadata(file_paths, args.totalTimeSteps, args.overlap, output_path="./metadata/metadata.pkl")
+
+    # Split metadata into train, validation, and test sets
+
+    def split_metadata_by_date(metadata, val_ratio=0.1, test_ratio=0.1):
+        """
+        Split metadata into train, val, and test based on file dates.
+        """
+        
+        # Extract file dates and group metadata by file
+        file_date_map = {}
+        pattern = re.compile(r"(\d{2})(\d{2})-(\d{4}).*?(202\d)")
+        
+        def extract_datetime(file_name):
+            """
+            Extracts a datetime object from the file name.
+            """
+            match = pattern.search(file_name)
+            if match:
+                month, day, time, year = match.groups()
+                hour, minute = divmod(int(time), 100)
+                return datetime(int(year), int(month), int(day), hour, minute)
+            else:
+                raise ValueError(f"Invalid file name format: {file_name}")
+
+        file_times = {}
+        for item in metadata:
+            file_name = item['file_path'].split('/')[-1]
+            file_times[item['file_path']] = extract_datetime(file_name)
+
+        # Sort files by date
+        sorted_files = sorted(file_times.items(), key=lambda x: x[1])
+
+        # Split train, val, test
+        files = [file for file, _ in sorted_files]
+        train_files, temp_files = train_test_split(files, test_size=val_ratio + test_ratio, shuffle=False)
+        val_files, test_files = train_test_split(temp_files, test_size=test_ratio / (val_ratio + test_ratio), shuffle=False)
+
+        # Split metadata based on file assignments
+        train_metadata = [item for item in metadata if item['file_path'] in train_files]
+        val_metadata = [item for item in metadata if item['file_path'] in val_files]
+        test_metadata = [item for item in metadata if item['file_path'] in test_files]
+        
+        # Shuffle train metadata
+
+        return train_metadata, val_metadata, test_metadata
+
+    # Example usage
+    train_metadata, val_metadata, test_metadata = split_metadata_by_date(
+        metadata, val_ratio=0.1, test_ratio=0.1)
+    print('train: '+str(len(train_metadata))+' val:'+str(len(val_metadata))+' test: '+str(len(test_metadata)))
+
+    class Dataset(Dataset):
+        def __init__(self, args, metadata, challenge_data=None):
+            self.metadata = metadata
+            self.args = args
+            self.challenge_data = challenge_data
+
+        def __len__(self):
+            if self.challenge_data is None:
+                return len(self.metadata)
+            else:
+                return len(self.challenge_data) 
+
+        def __getitem__(self, idx):
+            """
+            Dynamically loads the required chunk of data based on metadata.
+            """
+            if self.challenge_data is None:
+                item = self.metadata[idx]
+                file_path, start_idx, end_idx = item['file_path'], item['start_idx'], item['end_idx']
+                chunk = pd.read_csv(file_path, skiprows=range(1, start_idx), nrows=end_idx - start_idx)
+                # Extract agent positions and velocities (x, y, vx, vy)
+                data = []
+            else:
+                chunk = self.challenge_data[idx]
+                data = []
+
+            for agent in self.args.agents:
+                agent_data = chunk[[f'{agent}_x', f'{agent}_y', f'{agent}_vx', f'{agent}_vy']].values
+                if self.challenge_data is not None:
+                    agent_data = agent_data[-self.args.burn_in:] # should be modified later
+                data.append(agent_data)
+            
+            # Stack agents and convert to tensor
+            tensor = torch.tensor(data, dtype=torch.float32)  # Shape: (agents, length, dim)
+            tensor = tensor.permute(1, 0, 2)  # Shape: (length, agents, dim)
+            tensor = tensor.reshape(tensor.size(0), -1)  # Flatten the last two dimensions
+            tensor = tensor.unsqueeze(0) # agents, time, dim
+            return tensor
+
+    # Challenge data
+    if args.Challenge:
+        urls_challenge = os.listdir(args.challenge_data)
+        challenge_data = []
+        for url in urls_challenge:
+            if url == '@eaDir':
+                continue
+            challenge_data.append(pd.read_csv(args.challenge_data + os.sep + url))
+        test_metadata = None
+        len_seqs_test = len(challenge_data)
+        batchSize_test = len_seqs_test
+    else:
+        challenge_data = None
+        len_seqs_test = len(test_metadata)
+        batchSize_test = batchSize
+
+    # Create dataset and dataloader using metadata
+    args.agents = [f'l{i}' for i in range(1, 12)] + [f'r{i}' for i in range(1, 12)] + ['b']
+    num_workers = args.num_workers
+    kwargs = {'num_workers': num_workers, 'pin_memory': True} if args.cuda else {}
+    print('num_workers:'+str(num_workers))
+    if not TEST:    
+        train_loader = DataLoader(Dataset(args, train_metadata),
+                batch_size=args.batchsize, shuffle=True, **kwargs)
+        val_loader = DataLoader(Dataset(args, val_metadata),
+                batch_size=args.batchsize, shuffle=False, **kwargs)
+    
+    test_loader = DataLoader(Dataset(args, test_metadata, challenge_data=challenge_data),
+                batch_size=args.batchsize, shuffle=False, **kwargs)
 
     activeRoleInd = range(n_roles)
     activeRole = []; 
     activeRole.extend([str(n) for n in range(n_roles)]) # need to be reconsidered
+    args.n_agents = len(activeRole)
 
     outputlen0 = 2
-        
-    numOfPrevSteps = 1 # We are only looking at the most recent character each time. 
-    totalTimeSteps_test = totalTimeSteps
     n_feat = 4
+    featurelen = 4*23  
+    args.n_feat = n_feat
+    args.fs = fs
+    args.horizon = totalTimeSteps
 
-    if os.path.isfile(game_files+'_te_0.pkl'): 
-        print(game_files+'_te_0.pkl'+' can be loaded')
-        with open(game_files+'_tr'+str(0)+'.pkl', 'rb') as f:
-            X_all,len_seqs_val,len_seqs_test = np.load(f,allow_pickle=True)         
+    ####### Sanity check ##################
+    if args.Sanity:
+        losses = run_sanity(args,test_loader)
 
-        print('load '+game_files+'_tr0.pkl')
-    else:
-        if os.path.isfile(game_files_pre+'.pkl'):
-            print(game_files_pre+'.pkl will be loaded')
-            with open(game_files_pre+'.pkl', 'rb') as f:
-                game_data,game_data_te = np.load(f,allow_pickle=True)[:2] # ,_,_
-
-        else: 
-            print(game_files_pre+'.pkl is not existed then will be created')
-            game_data,game_data_te,HSL_d,HSL_o = process_game_data(Data, all_games_id, args) 
-            with open(game_files_pre+'.pkl', 'wb') as f:
-                try: pickle.dump([game_data,game_data_te,HSL_d,HSL_o], f, protocol=4)
-                except: import pdb; pdb.set_trace()
-
-        print('Final number of events:', len(game_data), '+', len(game_data_te)) # 
-        game_ind = np.arange(len(game_data))
-        if args.data == 'soccer':
-            game_train, game_test,_,_ = train_test_split(game_ind, game_ind, test_size=1/val_devide, random_state=42)
-            game_data_te = [game_data[i] for i in game_test] 
-            game_data = [game_data[i] for i in game_train] 
-
-        # create sequences -----------------------------------------------------------
-        X_train_all = get_sequences(game_data, activeRoleInd, 
-                totalTimeSteps+5, overlapWindow, n_pl, n_feat) # [role][seqs][steps,feats]
-
-        print('get train sequences')
-        del game_data # -------------
-        # split train/validation
-        len_seqs = len(X_train_all) 
-        X_ind = np.arange(len_seqs)
-        ind_train, ind_val,_,_ = train_test_split(X_ind, X_ind, test_size=1/val_devide, random_state=42)
-
-        featurelen = X_train_all[0].shape[1] 
-        len_seqs_tr = len(ind_train)
-        offSet_tr = math.floor(len_seqs_tr / batchSize)
-        batchSize_val = len(ind_val)
-
-        X_all = np.zeros([len(ind_train), totalTimeSteps+4, featurelen])
-        X_val_all = np.zeros([len(ind_val), totalTimeSteps+4, featurelen])
-        # for i, X_train in enumerate(X_train_all):
-        i_tr = 0; i_val = 0
-        for b in range(len_seqs):  
-            if set([b]).issubset(set(ind_train)):
-                for r in range(totalTimeSteps+4):
-                    X_all[i_tr][r][:] = np.squeeze(X_train_all[b][r,:])
-                i_tr += 1
-            else:
-                for r in range(totalTimeSteps+4):
-                    X_val_all[i_val][r][:] = np.squeeze(X_train_all[b][r,:])
-                i_val += 1
-
-        print('create train sequences')
-        
-        del X_train_all
-
-        # for test data-------------
-        X_test_all = get_sequences(game_data_te, activeRoleInd, 
-            totalTimeSteps+5, overlapWindow, n_pl, n_feat) # [role][seqs][steps,feats]
-        del game_data_te
-
-        len_seqs_val = len(X_val_all)  
-        len_seqs_test = len(X_test_all)  
-        batchSize_test = len_seqs_test # args.batchsize # 32
-        len_seqs_test0 = len_seqs_test
-        ind_test = np.arange(len_seqs_test)
-
-        X_test_test_all = np.zeros([len_seqs_test, totalTimeSteps_test+4, featurelen]) 
-        i_te = 0
-        for b in range(len_seqs_test0):
-            if args.data == 'soccer':
-                for r in range(totalTimeSteps_test+4):
-                    X_test_test_all[b][r][:] = np.squeeze(X_test_all[b][r,:])
-
-        print('create test sequences')
-        # if offSet_tr > 0: 
-        for j in range(offSet_tr):
-            tmp_data = X_all[j*batchSize:(j+1)*batchSize,:,:]
-            with open(game_files+'_tr'+str(j)+'.pkl', 'wb') as f:
-                pickle.dump([tmp_data,len_seqs_val,len_seqs_test], f, protocol=4) 
-
-        J = 8
-        batchval = int(len_seqs_val/J)
-        for j in range(J):
-            if j < J-1:
-                tmp_data = X_val_all[j*batchval:(j+1)*batchval,:,:]
-            else:
-                tmp_data = X_val_all[j*batchval:,:,:]
-            with open(game_files+'_val_'+str(j)+'.pkl', 'wb') as f:
-                pickle.dump([tmp_data], f, protocol=4)                       
-
-        batchte = int(len_seqs_test/J)
-        for j in range(J):
-            if j < J-1:
-                tmp_data = X_test_test_all[j*batchte:(j+1)*batchte,:,:]
-            else:
-                tmp_data = X_test_test_all[j*batchte:,:,:]
-            with open(game_files+'_te_'+str(j)+'.pkl', 'wb') as f:
-                pickle.dump([tmp_data], f, protocol=4)     
-
-        if True:
-            experiment_path = './test_samples/gt_'+str(n_roles)
-            experiment_path2 = './test_samples/input_'+str(n_roles)
-            if not os.path.exists(experiment_path):
-                os.makedirs(experiment_path)
-                os.makedirs(experiment_path2)
-
-            # Save samples to CSV        
-            for seq in range(X_test_test_all.shape[0]):
-                sample_ = X_test_test_all[seq].reshape((-1,23,n_feat))[:totalTimeSteps,:,:2] #
-                # ground truth
-                sample_path = os.path.join(experiment_path,str(seq)+'.csv')
-                df = pd.DataFrame(sample_.reshape(sample_.shape[0], -1), columns=[f'agent_{agent}_{coord}' for agent in range(sample_.shape[1]) for coord in ['x', 'y']])
-                df.to_csv(sample_path, index_label='time')
-                # test input
-                sample_path = os.path.join(experiment_path2,str(seq)+'.csv')
-                sample_ = sample_[:args.burn_in]
-                df = pd.DataFrame(sample_.reshape(sample_.shape[0], -1), columns=[f'agent_{agent}_{coord}' for agent in range(sample_.shape[1]) for coord in ['x', 'y']])
-
-                #df = pd.DataFrame()
-                #for t in range(args.burn_in):
-                #    for agent in range(sample_.shape[0]):
-                #        df.loc[t, f'agent_{agent}_x'] = sample_[agent, t, 0]
-                #        df.loc[t, f'agent_{agent}_y'] = sample_[agent, t, 1]
-                df.to_csv(sample_path, index_label='time')
-            print('Samples saved to {}'.format(sample_path))
-             
-        del X_val_all, X_test_test_all, tmp_data
-
-        print('save train and test sequences')
-        with open(game_files+'_tr'+str(0)+'.pkl', 'rb') as f:
-            X_all,len_seqs_val,len_seqs_test = np.load(f,allow_pickle=True) 
-
-     
-
-    # count batches 
-    offSet_tr =  len(glob.glob(game_files+'_tr*.pkl'))
-    # variables
-    featurelen = X_all.shape[2] #[0][0][0]#see get_sequences in sequencing.py
-    len_seqs_tr = batchSize*offSet_tr
-    print('featurelen: '+str(featurelen)+' train_seqs: '+str(len_seqs_tr)+' val_seqs: '+str(len_seqs_val)+' test_seqs: '+str(len_seqs_test))
-    
     # parameters for RNN -----------------------------------
-    init_filename0 = path_init+ 'sub' + str(args.fs) + '_' + str(n_roles)
-    init_filename0 = init_filename0 + 'filt_'  
-   
+    init_filename0 = path_init
 
     init_filename0 = init_filename0 + args.model + '_' + args.data + '/'
     init_filename0 = init_filename0 + str(batchSize) + '_' + str(totalTimeSteps)      
@@ -423,19 +461,10 @@ if __name__ == '__main__':
     if not os.path.isdir(init_pthname):
         os.makedirs(init_pthname)
 
-    if (args.n_GorS==7500 and args.data == 'soccer'):
-        batchSize = int(batchSize/2)
-    # args.hard_only = True
     args.dataset = args.data
-    args.n_feat = n_feat
-    args.fs = fs
-    args.game_files = game_files  
-    args.game_files_val = game_files_val
-    args.game_files_te = game_files_te
     args.start_lr = 1e-3 
     args.min_lr = 1e-3 
     clip = True # gradient clipping
-    args.seed = 200
     save_every = 1
     args.batch_size = batchSize
     # args.cont = False # continue training previous best model
@@ -446,16 +475,7 @@ if __name__ == '__main__':
     args.rnn_dim = 100 # 100
     args.n_layers = 2
     args.rnn_micro_dim = args.rnn_dim
-
-    args.horizon = totalTimeSteps
-    args.n_agents = len(activeRole)
     args.n_all_agents = 22 if args.data == 'soccer' else 10 
-    if not torch.cuda.is_available():
-        args.cuda = False
-        print('cuda is not used')
-    else:
-        args.cuda = True
-        print('cuda is used')
     ball_dim = 4 
     # Parameters to save
     temperature = 1 if args.data == 'soccer' else 1 
@@ -488,19 +508,6 @@ if __name__ == '__main__':
         'temperature' : temperature,
         'drop_ind' : args.drop_ind,
     }
-        
-    #'pretrain' : args.pretrain,
-        
-    # Set manual seed
-    random.seed(args.seed)
-    np.random.seed(args.seed)
-    torch.manual_seed(args.seed)
-    if args.cuda:
-        torch.cuda.manual_seed(args.seed)
-
-    ####### Sanity check ##################
-    if args.Sanity:
-        losses = run_sanity(args,game_files+'_te_')
 
     # Load model
     
@@ -528,28 +535,7 @@ if __name__ == '__main__':
 
     print('############################################################')
 
-    # Dataset loaders
-    num_workers = args.num_workers
-    kwargs = {'num_workers': num_workers, 'pin_memory': True} if args.cuda else {}
-    kwargs2 = {'num_workers': num_workers, 'pin_memory': True} if args.cuda else {}
-    print('num_workers:'+str(num_workers))
-    batchSize_val = len_seqs_val if len_seqs_val <= batchSize else batchSize
-    batchSize_test = len_seqs_test if len_seqs_test <= int(batchSize/2) else batchSize # int(/4)
-    if (args.n_GorS==7500 and args.dataset == 'soccer'):
-        batchSize_val = int(batchSize/4*3)
-        batchSize_test = 128
 
-    if not TEST:    
-        train_loader = DataLoader(
-            Dataset(args, len_seqs_tr, train=1),
-            batch_size=batchSize, shuffle=False, **kwargs)    
-        val_loader = DataLoader(
-            Dataset(args, len_seqs_val, train=0),
-            batch_size=batchSize_val, shuffle=False, **kwargs2)
-    test_loader = DataLoader(
-        Dataset(args, len_seqs_test, train=-1),
-        batch_size=batchSize_test, shuffle=False, **kwargs2)
-    print('batch train: '+str(batchSize)+' val:'+str(batchSize_val)+' test: '+str(batchSize_test))
 
     ###### TRAIN LOOP ##############
     best_val_loss = 0
@@ -659,7 +645,7 @@ if __name__ == '__main__':
             
             sample, output, output2 = model.sample(data, rollout=True, burn_in=args.burn_in, n_sample=1, TEST = True, Challenge = args.Challenge)
 
-            samples[:,:,batch_idx*batchSize_test:(batch_idx+1)*batchSize_test] = sample.detach().cpu().numpy()[:-4]
+            samples[:,:,batch_idx*batchSize_test:(batch_idx+1)*batchSize_test] = sample.detach().cpu().numpy()[:-1]
 
             del sample 
             if not args.Challenge:
@@ -700,7 +686,7 @@ if __name__ == '__main__':
                 ) 
         else: # challenge   
             # Save samples
-            experiment_path = './results/test_'+str(n_roles)+'/submission'
+            experiment_path = './results/test/submission'
             if not os.path.exists(experiment_path):
                 os.makedirs(experiment_path)
 

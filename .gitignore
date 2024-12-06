@@ -7,6 +7,7 @@ test_samples/*
 results/*
 weights/*
 tracking_csv_files3/*
+robocup2d_data/*
 slurm-*
 *.pkl
 *.gif

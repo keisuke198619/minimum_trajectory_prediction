@@ -25,6 +25,7 @@ class RNN_GAUSS(nn.Module):
         h_dim = params['h_dim']
         rnn_dim = params['rnn_dim']
         n_layers = params['n_layers']
+        self.len_seq = params['len_seq']
 
         # embedding
         embed_size = params['embed_size']
@@ -122,6 +123,7 @@ class RNN_GAUSS(nn.Module):
         h = [torch.zeros(self.params['n_layers'], batchSize, self.params['rnn_dim']) for i in range(self.n_network)]
         if self.params['cuda']:
             h = cudafy_list(h)
+
         states = states.repeat(1,n_agents,1,1).clone()
 
         for t in range(len_time):
@@ -218,7 +220,12 @@ class RNN_GAUSS(nn.Module):
                     self.bn_dec[i] = self.bn_dec[i].to(device)   
 
         states = states.repeat(1,n_agents,1,1).clone()
-        states_n = [states.clone() for _ in range(n_sample)]
+        if Challenge:
+            zero_frames = torch.zeros(self.len_seq-burn_in+1, states.size(1), states.size(2), states.size(3)).to(device)
+            states = torch.cat((zero_frames, states), dim=0)
+            states_n = [states.clone() for _ in range(n_sample)]
+        else:
+            states_n = [states.clone() for _ in range(n_sample)]
 
         for t in range(len_time):
             for n in range(n_sample):
@@ -277,7 +284,7 @@ class RNN_GAUSS(nn.Module):
                     _, h[i_network][n] = self.rnn[i_network](enc_in.unsqueeze(0), h[i_network][n])
 
                 # role out
-                if t >= burn_in and rollout:
+                if t >= burn_in-1 and rollout:
                     y_t = states_n[n][t].clone() 
                     if n_agents < 23:
                         y_t1_ = states_n[n][t+1][i].clone()  
