@@ -6,6 +6,7 @@ data/*
 test_samples/*
 results/*
 weights/*
+tracking_csv_files3/*
 slurm-*
 *.pkl
 *.gif
