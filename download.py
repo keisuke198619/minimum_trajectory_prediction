@@ -19,7 +19,7 @@ args, _ = parser.parse_known_args()
 urls = [args.base_url + os.sep + subpath + os.sep for subpath in args.subpaths]
 save_dir = args.save_dir
 os.makedirs(args.save_dir, exist_ok=True)
-debug = True
+debug = False
 
 # Function to download data
 def download_data(file_name):

@@ -255,7 +255,7 @@ if __name__ == '__main__':
             file_paths (list): List of file paths to process.
             output_path (str): Path to save the metadata.
         """
-        total_time_steps += 2
+        total_time_steps += 1
         metadata = []
         for file_path in file_paths:
             # Read only the playmode column to identify play_on intervals
