@@ -5,6 +5,7 @@ import requests
 from bs4 import BeautifulSoup
 from subprocess import call  # Import to execute another Python file
 
+# Function for url tracking (Will be done next week)
 url = "http://alab.ise.ous.ac.jp/robocupdata/rc2021-roundrobin/normal/alice2021-helios2021/"
 save_dir = 'tracking_csv_files3'
 os.makedirs(save_dir, exist_ok=True)
