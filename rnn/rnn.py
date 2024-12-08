@@ -125,7 +125,7 @@ class RNN(nn.Module):
                 enc_in = torch.cat([current_vel, state_in, h[i][-1]], 1)
 
                 dec_t = self.dec[i_network](h[i][-1])
-                dec_mean_t = self.dec_mean[i_network](dec_t)
+                dec_mean_t = self.dec_mean[i_network](dec_t) # + current_vel
                 _, h[i] = self.rnn[i_network](enc_in.unsqueeze(0), h[i])
 
                 # objective function
@@ -188,8 +188,6 @@ class RNN(nn.Module):
                 self.rnn[i] = self.rnn[i].to(device)
                 self.dec[i] = self.dec[i].to(device)
                 self.dec_mean[i] = self.dec_mean[i].to(device)
-                if self.batchnorm:
-                    self.bn_dec[i] = self.bn_dec[i].to(device)   
 
         # states = states.repeat(1,n_agents,1,1).clone()
         if Challenge:
@@ -229,9 +227,7 @@ class RNN(nn.Module):
                     enc_in = torch.cat([current_vel, state_in, h[i][n][-1]], 1)
 
                     dec_t = self.dec[i_network](h[i][n][-1])
-                    if self.batchnorm:
-                        dec_t = self.bn_dec[i_network](dec_t) 
-                    dec_mean_t = self.dec_mean[i_network](dec_t)
+                    dec_mean_t = self.dec_mean[i_network](dec_t) # + current_vel
                     # objective function
                     if not Challenge:
                         out['L_rec'][n] += batch_error(dec_mean_t, x_t, Sum)
