@@ -9,7 +9,6 @@ parser.add_argument('--n_roles', type=int, default=23)
 parser.add_argument('--burn_in', type=int, default=20)
 parser.add_argument('--submit', type=str, required=True)
 parser.add_argument('--gt', type=str, required=True)
-parser.add_argument('--input', type=str, required=True)
 args, _ = parser.parse_known_args()
 
 def get_csv_files(folder):
@@ -20,14 +19,14 @@ def get_csv_files(folder):
     except: import pdb; pdb.set_trace()
     return csv_files
 
-def compute_errors(submit_df, gt_df, agents_list, burn_in):
+def compute_errors(submit_df, gt_df, n_roles, burn_in):
     """
     Compute average and endpoint errors between submission and ground truth dataframes.
     
     Parameters:
         submit_df (pd.DataFrame): Submission dataframe.
         gt_df (pd.DataFrame): Ground truth dataframe.
-        agents_list (int): agent name list.
+        n_roles (int): Number of agents.
         burn_in (int): Number of initial time steps to exclude.
         
     Returns:
@@ -37,11 +36,11 @@ def compute_errors(submit_df, gt_df, agents_list, burn_in):
     endpoint_errors = []
     
     # Iterate over each agent
-    for agent in agents_list:
-        x_pred = submit_df[f'{agent}_x'].values
-        y_pred = submit_df[f'{agent}_y'].values
-        x_gt = gt_df[f'{agent}_x'].values
-        y_gt = gt_df[f'{agent}_y'].values
+    for agent in range(n_roles):
+        x_pred = submit_df[f'agent_{agent}_x'].values
+        y_pred = submit_df[f'agent_{agent}_y'].values
+        x_gt = gt_df[f'agent_{agent}_x'].values
+        y_gt = gt_df[f'agent_{agent}_y'].values
         
         # Exclude burn-in steps
         x_pred_burn = x_pred[burn_in:]
@@ -69,14 +68,12 @@ def compute_errors(submit_df, gt_df, agents_list, burn_in):
 def main():
     submit_folder = args.submit
     gt_folder = args.gt
-    input_folder = args.input
     n_roles = args.n_roles
     burn_in = args.burn_in
     
     # Retrieve CSV files from both submission and ground truth folders
     submit_files = get_csv_files(submit_folder)
     gt_files = get_csv_files(gt_folder)
-    input_files = get_csv_files(input_folder)
     
     # Extract file names for matching
     submit_filenames = [os.path.basename(f) for f in submit_files]
@@ -93,40 +90,34 @@ def main():
     # Initialize lists to store all errors
     all_average_errors = []
     all_endpoint_errors = []
-    agents_list = [f'l{i}' for i in range(1, 12)] + [f'r{i}' for i in range(1, 12)] + ['b']
     
     # Iterate over each common file
     for filename in sorted(common_files):
         submit_path = os.path.join(submit_folder, filename)
         gt_path = os.path.join(gt_folder, filename)
-        input_path = os.path.join(input_folder, filename)
         
         # Read CSV files
         try:
-            submit_df = pd.read_csv(submit_path, index_col='#')
-            gt_df = pd.read_csv(gt_path, index_col='#')
-            input_df = pd.read_csv(input_path, index_col='#')
+            submit_df = pd.read_csv(submit_path, index_col='time')
+            gt_df = pd.read_csv(gt_path, index_col='time')
         except Exception as e:
             print(f"Error reading files {filename}: {e}")
             continue
         
         # Check if required columns exist
         expected_columns = []
-
-        # Sanitary check
-        try: assert input_df.index[-1] + 1 == submit_df.index[0], "The last cycle of input_df does not match the first cycle of submit_df"
-        except: import pdb; pdb.set_trace()
-        # Extract the cycles that are present in submit_df from gt_df
-        common_cycles = submit_df.index.intersection(gt_df.index)
-        gt_df2 = gt_df.loc[common_cycles]
-
-        # Check if required columns exist
-        expected_columns = [f'{agent}_x' for agent in agents_list] + [f'{agent}_y' for agent in agents_list]
-        try: assert all(col in submit_df.columns for col in expected_columns), "Submission file is missing required columns"
-        except: import pdb; pdb.set_trace()
-
+        for agent in range(n_roles):
+            expected_columns.extend([f'agent_{agent}_x', f'agent_{agent}_y'])
+        
+        if not all(col in submit_df.columns for col in expected_columns):
+            print(f"Submission file {filename} is missing required columns.")
+            continue
+        if not all(col in gt_df.columns for col in expected_columns):
+            print(f"Ground truth file {filename} is missing required columns.")
+            continue
+        
         # Compute errors for the current file
-        avg_error, end_error = compute_errors(submit_df, gt_df2, agents_list, burn_in)
+        avg_error, end_error = compute_errors(submit_df, gt_df, n_roles, burn_in)
         all_average_errors.append(avg_error)
         all_endpoint_errors.append(end_error)
     
@@ -140,6 +131,7 @@ def main():
     
     # Print evaluation results
     print("Trajectory Prediction Evaluation Results:")
+    print(f"Number of Agents: {n_roles}")
     print(f"Burn-in Steps: {burn_in}")
     print(f"Number of Evaluated Sequences: {len(all_average_errors)}")
     print(f"Average Error (after burn-in): {overall_average_error:.4f}")

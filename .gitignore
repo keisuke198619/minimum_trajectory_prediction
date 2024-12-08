@@ -8,6 +8,7 @@ results/*
 weights/*
 tracking_csv_files3/*
 robocup2d_data/*
+robocup2d_data_/*
 slurm-*
 *.pkl
 *.gif

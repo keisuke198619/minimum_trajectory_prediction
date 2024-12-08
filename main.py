@@ -23,6 +23,7 @@ from data_loader_soccer import Dataset
 from preprocessing import *
 from helpers import *
 from sequencing import get_sequences
+from tqdm import tqdm
 
 #from scipy import signal
 
@@ -37,14 +38,13 @@ parser.add_argument('--data_dir', type=str, default='robocup2d_data')
 
 # parser.add_argument('--n_GorS', type=int, required=True)
 parser.add_argument('--n_roles', type=int, default=23)
-parser.add_argument('--val_devide', type=int, default=10)
 parser.add_argument('-t_step', '--totalTimeSteps', type=int, default=50)
-parser.add_argument('--overlap', type=int, default=40)
+parser.add_argument('--overlap', type=int, default=10)
 parser.add_argument('--batchsize', type=int, required=True)
 parser.add_argument('--n_epoch', type=int, required=True)
 parser.add_argument('--model', type=str, required=True)
 parser.add_argument('-ev_th','--event_threshold', type=int, default=50, help='event with frames less than the threshold will be removed')
-parser.add_argument('--fs', type=int, default=10)
+parser.add_argument('--fs', type=int, default=1)
 # parser.add_argument('--acc', type=int, default=0)
 parser.add_argument('--cont', action='store_true')
 parser.add_argument('--num_workers', type=int, default=0)
@@ -53,7 +53,6 @@ parser.add_argument('--TEST', action='store_true')
 parser.add_argument('--challenge_data', type=str, default=None)
 # parser.add_argument('--Challenge', action='store_true')
 parser.add_argument('--Sanity', action='store_true')
-parser.add_argument('--res', action='store_true')
 parser.add_argument('--pretrain', type=int, default=0)
 parser.add_argument('--finetune', action='store_true')
 parser.add_argument('--drop_ind', action='store_true')
@@ -74,10 +73,7 @@ def run_epoch(train,rollout,hp):
  
     losses = {} 
     losses2 = {}
-    for batch_idx, (data) in enumerate(loader):
-        # print(str(batch_idx))
-        d1 = {'batch_idx': batch_idx}
-        hp.update(d1)
+    for batch_idx, (data) in enumerate(tqdm(loader, desc="Processing batches")):
 
         if args.cuda:
             data = data.cuda() #, data_y.cuda()
@@ -237,12 +233,10 @@ if __name__ == '__main__':
         
     event_threshold = args.event_threshold
     n_roles = args.n_roles
-    # n_GorS = args.n_GorS # games if NBA and seqs if soccer
-    val_devide = args.val_devide
     batchSize = args.batchsize # 
     overlapWindow = args.overlap # 
     totalTimeSteps =  args.totalTimeSteps # 
-    args.burn_in = 20 # int(totalTimeSteps/3)
+    args.burn_in = 20
 
     file_paths = [os.path.join(args.data_dir, file) for file in os.listdir(args.data_dir)]
     os.makedirs("./metadata", exist_ok=True)
@@ -399,11 +393,12 @@ if __name__ == '__main__':
     # Challenge data
     if args.Challenge:
         urls_challenge = os.listdir(args.challenge_data)
-        challenge_data = []
+        challenge_data,challenge_cycle = [],[]
         for url in urls_challenge:
             if url == '@eaDir':
                 continue
             challenge_data.append(pd.read_csv(args.challenge_data + os.sep + url))
+            challenge_cycle.append(challenge_data[-1].shape[0])
         test_metadata = None
         len_seqs_test = len(challenge_data)
         batchSize_test = len_seqs_test
@@ -450,9 +445,6 @@ if __name__ == '__main__':
     if args.drop_ind:
         init_filename0 = init_filename0 + '_drop_ind' 
 
-    if args.res:
-        init_filename0 = init_filename0 + '_res' 
-
     if not os.path.isdir(init_filename0):
         os.makedirs(init_filename0)
     init_pthname = '{}_state_dict'.format(init_filename0)
@@ -482,7 +474,6 @@ if __name__ == '__main__':
         
     params = {
         'model' : args.model,
-        'res' : args.res,
         'dataset' : args.dataset,
         'x_dim' : args.x_dim,
         'y_dim' : args.y_dim,
@@ -654,8 +645,7 @@ if __name__ == '__main__':
                         losses[key] = np.zeros(1)
                         losses2[key] = np.zeros((len_seqs_test))
                     losses[key] += np.sum(output[key].detach().cpu().numpy(),axis=1)
-                    try: losses2[key][batch_idx*batchSize_test:(batch_idx+1)*batchSize_test] = output[key].detach().cpu().numpy()
-                    except: import pdb; pdb.set_trace()
+                    losses2[key][batch_idx*batchSize_test:(batch_idx+1)*batchSize_test] = output[key].detach().cpu().numpy()
                     
                 for key in output2:
                     if batch_idx == 0:
@@ -691,10 +681,27 @@ if __name__ == '__main__':
                 os.makedirs(experiment_path)
 
             # Save samples to CSV        
+            i = 0
             for seq in range(samples.shape[2]):
-                sample_ = samples[:, 0, seq].reshape((-1,23,n_feat))[:,:,:2] #
+                sample_ = samples[args.burn_in:, 0, seq].reshape((-1,23,n_feat))[:,:,:2] #
+                # check: samples[args.burn_in-1, 0, seq].reshape((23,n_feat))[:,:2]
                 sample_path = os.path.join(experiment_path, f'{seq+1:02}.csv')
                 df = pd.DataFrame(sample_.reshape(sample_.shape[0], -1), columns=[f'agent_{agent}_{coord}' for agent in range(sample_.shape[1]) for coord in ['x', 'y']])
-                df.to_csv(sample_path, index_label='time')
+                
+                # rename columns and cycles
+                df.columns = [col.replace('agent_0', 'l1').replace('agent_3', 'l4').replace('agent_4', 'l5')
+                              .replace('agent_5', 'l6').replace('agent_6', 'l7').replace('agent_7', 'l8')
+                              .replace('agent_8', 'l9').replace('agent_9', 'l10').replace('agent_10', 'l11')
+                              .replace('agent_11', 'r1').replace('agent_12', 'r2').replace('agent_13', 'r3')
+                              .replace('agent_14', 'r4').replace('agent_15', 'r5').replace('agent_16', 'r6')
+                              .replace('agent_17', 'r7').replace('agent_18', 'r8').replace('agent_19', 'r9')
+                              .replace('agent_20', 'r10').replace('agent_21', 'r11') for col in df.columns]
+                df.columns = [col.replace('agent_22', 'b').replace('agent_1', 'l2').replace('agent_2', 'l3') for col in df.columns]
+
+                cycle = range(challenge_cycle[i]+1, challenge_cycle[i] + len(df) + 1)
+                df.insert(0, '#', cycle)
+
+                df.to_csv(sample_path, index=False)
+                i += 1
             print('Samples saved to {}'.format(experiment_path))
         import pdb; pdb.set_trace()
