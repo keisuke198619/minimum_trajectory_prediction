@@ -39,7 +39,7 @@ parser.add_argument('--data_dir', type=str, default='robocup2d_data')
 # parser.add_argument('--n_GorS', type=int, required=True)
 parser.add_argument('--n_roles', type=int, default=23)
 parser.add_argument('-t_step', '--totalTimeSteps', type=int, default=50)
-parser.add_argument('--overlap', type=int, default=10)
+parser.add_argument('--overlap', type=int, default=0)
 parser.add_argument('--batchsize', type=int, required=True)
 parser.add_argument('--n_epoch', type=int, required=True)
 parser.add_argument('--model', type=str, required=True)
@@ -73,13 +73,18 @@ def run_epoch(train,rollout,hp):
  
     losses = {} 
     losses2 = {}
+    sample_nan = 0
     for batch_idx, (data) in enumerate(tqdm(loader, desc="Processing batches")):
 
         if args.cuda:
             data = data.cuda() #, data_y.cuda()
         # (batch, agents, time, feat) => (time, agents, batch, feat)
         data = data.permute(2, 1, 0, 3) #, data.transpose(0, 1)
-        
+
+        if torch.isnan(data).any():
+            sample_nan += torch.sum(torch.isnan(data).any(dim=1).any(dim=2).any(dim=0))
+            data = data[:,:,~torch.isnan(data).any(dim=1).any(dim=2).any(dim=0)]
+
         if train == 1:
             batch_losses, batch_losses2 = model(data, rollout, train, hp=hp)
             optimizer.zero_grad()
@@ -104,15 +109,15 @@ def run_epoch(train,rollout,hp):
                 losses2[key] += batch_losses2[key].item()
 
     for key in losses:
-        losses[key] /= len(loader.dataset)
+        losses[key] /= (len(loader.dataset)-sample_nan)
     for key in losses2:
-        losses2[key] /= len(loader.dataset)
+        losses2[key] /= (len(loader.dataset)-sample_nan)
     return losses, losses2
 
 def loss_str(losses):
     ret = ''
     for key in losses:
-        if 'L' in key and not 'mac' in key and not 'vel' in key:
+        if False: # 'L' in key and not 'mac' in key and not 'vel' in key:
             ret += ' {}: {:.0f} |'.format(key, losses[key])
         elif 'vel' in key:
             ret += ' {}: {:.3f} |'.format(key, losses[key])
@@ -303,7 +308,7 @@ if __name__ == '__main__':
 
     # Split metadata into train, validation, and test sets
 
-    def split_metadata_by_date(metadata, val_ratio=0.1, test_ratio=0.1):
+    def split_metadata_by_date(metadata, val_ratio=0.1, test_ratio=0.1, val_games=None, test_games=None):
         """
         Split metadata into train, val, and test based on file dates.
         """
@@ -334,9 +339,12 @@ if __name__ == '__main__':
 
         # Split train, val, test
         files = [file for file, _ in sorted_files]
-        train_files, temp_files = train_test_split(files, test_size=val_ratio + test_ratio, shuffle=False)
-        val_files, test_files = train_test_split(temp_files, test_size=test_ratio / (val_ratio + test_ratio), shuffle=False)
-
+        if val_ratio is not None and test_ratio is not None:
+            train_files, temp_files = train_test_split(files, test_size=val_ratio + test_ratio, shuffle=False)
+            val_files, test_files = train_test_split(temp_files, test_size=test_ratio / (val_ratio + test_ratio), shuffle=False)
+        elif val_games is not None and test_games is not None:
+            train_files, temp_files = train_test_split(files, test_size=(val_games + test_games)/len(files), shuffle=False)
+            val_files, test_files = train_test_split(temp_files, test_size=test_games / (val_games + test_games), shuffle=False)
         # Split metadata based on file assignments
         train_metadata = [item for item in metadata if item['file_path'] in train_files]
         val_metadata = [item for item in metadata if item['file_path'] in val_files]
@@ -347,8 +355,13 @@ if __name__ == '__main__':
         return train_metadata, val_metadata, test_metadata
 
     # Example usage
-    train_metadata, val_metadata, test_metadata = split_metadata_by_date(
-        metadata, val_ratio=0.1, test_ratio=0.1)
+    if len(metadata) < 5000:
+        train_metadata, val_metadata, test_metadata = split_metadata_by_date(
+            metadata, val_ratio=0.1, test_ratio=0.1)
+    else:
+        train_metadata, val_metadata, test_metadata = split_metadata_by_date(
+            metadata, val_ratio=None, test_ratio=None, val_games=1, test_games=1)
+        
     print('train: '+str(len(train_metadata))+' val:'+str(len(val_metadata))+' test: '+str(len(test_metadata)))
 
     class Dataset(Dataset):
@@ -385,6 +398,11 @@ if __name__ == '__main__':
             
             # Stack agents and convert to tensor
             tensor = torch.tensor(data, dtype=torch.float32)  # Shape: (agents, length, dim)
+
+            if self.args.Modify_Velocity: 
+                vel = (tensor[:,1:,0:2] - tensor[:,:-1,0:2]) * self.args.fs
+                tensor[:,:-1,2:4] = vel
+
             tensor = tensor.permute(1, 0, 2)  # Shape: (length, agents, dim)
             tensor = tensor.reshape(tensor.size(0), -1)  # Flatten the last two dimensions
             tensor = tensor.unsqueeze(0) # agents, time, dim
@@ -412,6 +430,9 @@ if __name__ == '__main__':
     num_workers = args.num_workers
     kwargs = {'num_workers': num_workers, 'pin_memory': True} if args.cuda else {}
     print('num_workers:'+str(num_workers))
+    args.Modify_Velocity = True
+    print('Modify_Velocity:'+str(args.Modify_Velocity))
+
     if not TEST:    
         train_loader = DataLoader(Dataset(args, train_metadata),
                 batch_size=args.batchsize, shuffle=True, **kwargs)
@@ -548,7 +569,7 @@ if __name__ == '__main__':
             hyperparams['pretrain'] = pretrain
 
             # Set a custom learning rate schedule
-            if epochs_since_best == 5: # and lr > args.min_lr:
+            if epochs_since_best == 3: # and lr > args.min_lr:
                 # Load previous best model
                 filename = '{}_best.pth'.format(init_pthname)
 
@@ -558,6 +579,7 @@ if __name__ == '__main__':
                 # lr = max(lr/3, args.min_lr)
                 # print('########## lr {} ##########'.format(lr))
                 epochs_since_best = 0
+                print('##### Best model is loaded #####')
             else:
                 if not hyperparams['pretrain'] and not args.finetune:
                     # lr = lr*0.99 # 9
@@ -575,6 +597,8 @@ if __name__ == '__main__':
             hyperparams['burn_in'] = args.horizon
             train_loss,train_loss2 = run_epoch(train=1, rollout=False, hp=hyperparams)
             print('Train:\t'+loss_str(train_loss)+'|'+loss_str(train_loss2))
+
+            torch.cuda.empty_cache()
             
             hyperparams['burn_in'] = args.burn_in
             val_loss,val_loss2 = run_epoch(train=0, rollout=True, hp=hyperparams)
@@ -584,6 +608,8 @@ if __name__ == '__main__':
 
             epoch_time = time.time() - start_time
             print('Time:\t {:.3f}'.format(epoch_time))
+
+            torch.cuda.empty_cache()
 
             # Best model on test set
             if e > epoch_first_best and (best_val_loss == 0 or total_val_loss < best_val_loss): 

@@ -185,58 +185,5 @@ def roll_out_test(y_t,y_t_1,prediction_all,n_roles,n_feat,ball_dim,fs,batchSize)
         next_vel_remain = next_feature.reshape(batchSize,n_all_agents,n_feat)
         next_velocity = torch.cat([next_vel,next_vel_remain[:,n_roles:,2:]],1)
     new_feature_vector = torch.cat([next_position,next_velocity],dim=2).reshape(batchSize,n_all_agents*n_feat)
-
-
-    '''next_current = next_feature[:,0:n_feat_player] 
     
-
-    legacy_next = next_current.reshape(batchSize,n_all_agents,n_feat) 
-    new_matrix = torch.zeros((batchSize,n_all_agents_,n_feat)).to(device) 
-    if i < 11 or i == 22:
-        teammateList = list(range(n_half_agents)) 
-        opponentList = list(range(n_half_agents,n_all_agents_))  
-    elif i < 22:
-        teammateList = list(range(n_half_agents,n_all_agents_)) 
-        opponentList = list(range(n_half_agents))
-
-    roleOrderList = [role for role in range(n_roles)]
-    role_long = torch.zeros((batchSize,n_feat)).to(device)
-    if i < 22:
-        teammateList.remove(i)
-
-    # fix role vector
-    role_long[:,2:4] = next_vel[:,i,:]
-    role_long[:,0:2] = prev_feature[:,i*n_feat:(i*n_feat+2)] + prev_feature[:,i*n_feat+2:(i*n_feat+4)]*fs 
-
-    if n_roles < 23:
-        new_matrix[:,i,:] = role_long
-
-    # fix all teammates vector
-    for teammate in teammateList:
-        player = legacy_next[:,teammate,:]
-        if teammate in roleOrderList: # if the teammate is one of the active players: e.g. eliminate goalkeepers
-            teamRoleInd = roleOrderList.index(teammate)
-            
-            player[:,2:4] = next_vel[:,teamRoleInd,:]
-            player[:,0:2] = prev_feature[:,teamRoleInd*n_feat:(teamRoleInd*n_feat+2)] + prev_feature[:,teamRoleInd*n_feat+2:(teamRoleInd*n_feat+4)]*fs           
-
-        new_matrix[:,teammate,:] = player
-
-    for opponent in opponentList: 
-        player = legacy_next[:,opponent,:]
-        try: new_matrix[:,opponent,:] = player
-        except: import pdb; pdb.set_trace()
-
-    
-    if n_roles == 23:
-        ball = next_feature[:,88:88+ball_dim]  
-        if i == 22:
-            ball[:,2:4] = next_vel[:,i,:]
-            ball[:,0:2] = prev_feature[:,i*n_feat:(i*n_feat+2)] + prev_feature[:,i*n_feat+2:(i*n_feat+4)]*fs 
-        new_feature_vector = torch.cat([torch.reshape(new_matrix,(batchSize,n_all_agents_*n_feat)), ball ],dim=1) 
-
-    else:
-        ball = next_feature[:,n_feat_player:n_feat_player+ball_dim]  
-        new_feature_vector = torch.cat([torch.reshape(new_matrix,(batchSize,n_all_agents*n_feat)), ball ],dim=1) '''
-
     return new_feature_vector

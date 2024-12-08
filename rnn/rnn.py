@@ -6,12 +6,7 @@ from rnn.utils import nll_gauss
 from rnn.utils import batch_error, roll_out, roll_out_test
 import torch.nn.functional as F
 
-# Keisuke Fujii, 2020
-# modifying the code https://github.com/ezhan94/multiagent-programmatic-supervision
-
-class RNN_GAUSS(nn.Module):
-    """RNN model for each agent."""
-
+class RNN(nn.Module):
     def __init__(self, params, parser=None):
         super().__init__()
 
@@ -69,22 +64,6 @@ class RNN_GAUSS(nn.Module):
             nn.ReLU(),
             nn.Dropout(dropout)) for i in range(self.n_network)])
         self.dec_mean = nn.ModuleList([nn.Linear(h_dim, x_dim) for i in range(self.n_network)])
-        self.dec_std = nn.ModuleList([nn.Sequential(
-            nn.Linear(h_dim, x_dim),
-            nn.Softplus()) for i in range(self.n_network)])
-        
-        self.dec = nn.ModuleList([nn.Sequential(
-            nn.Linear(rnn_dim, h_dim),
-            nn.ReLU(),
-            nn.Dropout(dropout),
-            nn.Linear(h_dim, h_dim),
-            nn.ReLU(),
-            nn.Dropout(dropout)) for i in range(self.n_network)])
-        self.dec_mean = nn.ModuleList(
-            [nn.Linear(h_dim, x_dim) for i in range(self.n_network)])
-        self.dec_std = nn.ModuleList([nn.Sequential(
-            nn.Linear(h_dim, x_dim),
-            nn.Softplus()) for i in range(self.n_network)])
 
         self.rnn = nn.ModuleList([nn.GRU(in_enc, rnn_dim, n_layers) for i in range(self.n_network)])
         # self.rnn = nn.ModuleList([nn.GRU(y_dim, rnn_dim, n_layers) for i in range(n_agents)])
@@ -119,24 +98,20 @@ class RNN_GAUSS(nn.Module):
         batchSize = states.size(2)
         len_time = self.params['horizon'] #states.size(0)
 
-        h = [torch.zeros(self.params['n_layers'], batchSize, self.params['rnn_dim']) for i in range(self.n_network)]
+        h = [torch.zeros(self.params['n_layers'], batchSize, self.params['rnn_dim']) for i in range(n_agents)]
         if self.params['cuda']:
             h = cudafy_list(h)
 
-        states = states.repeat(1,n_agents,1,1).clone()
-
-        for t in range(len_time):
-            prediction_all = torch.zeros(batchSize, n_agents, x_dim)
-
-            for i in range(n_agents):  
-                if i <= 11:
-                    i_network = 0
-                elif i <= 22:
-                    i_network = 1
-                elif i == 23:
-                    i_network = 2
-                y_t = states[t][i].clone() # state
-                x_t0 = states[t+1][i][:,n_feat*i:n_feat*i+n_feat].clone() 
+        for i in range(n_agents):  
+            if i <= 11:
+                i_network = 0
+            elif i <= 22:
+                i_network = 1
+            elif i == 23:
+                i_network = 2
+            for t in range(len_time):        
+                y_t = states[t][0].clone() # state
+                x_t0 = states[t+1][0][:,n_feat*i:n_feat*i+n_feat].clone() 
 
                 # action
                 x_t = x_t0[:,2:4] # vel 
@@ -147,24 +122,22 @@ class RNN_GAUSS(nn.Module):
 
                 # RNN
                 state_in = y_t
-                enc_in = torch.cat([current_vel, state_in, h[i_network][-1]], 1)
+                enc_in = torch.cat([current_vel, state_in, h[i][-1]], 1)
 
-                dec_t = self.dec[i_network](h[i_network][-1])
+                dec_t = self.dec[i_network](h[i][-1])
                 dec_mean_t = self.dec_mean[i_network](dec_t)
-                dec_std_t = self.dec_std[i_network](dec_t)
-                _, h[i_network] = self.rnn[i_network](enc_in.unsqueeze(0), h[i_network])
+                _, h[i] = self.rnn[i_network](enc_in.unsqueeze(0), h[i])
 
                 # objective function
-                out['L_rec'] += nll_gauss(dec_mean_t, dec_std_t, x_t)
+                out['L_rec'] += batch_error(dec_mean_t, x_t)
+                if torch.isnan(out['L_rec']):
+                    import pdb; pdb.set_trace()
 
                 # body constraint            
                 v_t1 = dec_mean_t[:,:2]   
                 next_pos = current_pos + current_vel*fs
 
                 if t >= burn_in or burn_in==len_time:
-                    # prediction
-                    prediction_all[:,i,:] = dec_mean_t[:,:x_dim]    
-
                     # error (not used when backward)
                     out2['e_pos'] += batch_error(next_pos, x_t0[:,:2])
                     out2['e_vel'] += batch_error(v_t1, v0_t1)
@@ -205,20 +178,20 @@ class RNN_GAUSS(nn.Module):
         batchSize = states.size(2)
         len_time = self.params['horizon'] #states.size(0)
 
-        h = [[torch.zeros(self.params['n_layers'], batchSize, self.params['rnn_dim']) for _ in range(n_sample)] for i in range(self.n_network)]
+        h = [[torch.zeros(self.params['n_layers'], batchSize, self.params['rnn_dim']) for _ in range(n_sample)] for i in range(n_agents)]
         
         if self.params['cuda']:
             states = cudafy_list(states)
-            for i in range(self.n_network):
-                h[i] = cudafy_list(h[i])
+            for i in range(n_agents):
+                h[i] = cudafy_list(h[i])    
+            for i in range(self.n_network):                
                 self.rnn[i] = self.rnn[i].to(device)
                 self.dec[i] = self.dec[i].to(device)
-                self.dec_std[i] = self.dec_std[i].to(device) 
                 self.dec_mean[i] = self.dec_mean[i].to(device)
                 if self.batchnorm:
                     self.bn_dec[i] = self.bn_dec[i].to(device)   
 
-        states = states.repeat(1,n_agents,1,1).clone()
+        # states = states.repeat(1,n_agents,1,1).clone()
         if Challenge:
             zero_frames = torch.zeros(self.len_seq-burn_in+1, states.size(1), states.size(2), states.size(3)).to(device)
             states = torch.cat((states,zero_frames), dim=0)
@@ -238,10 +211,10 @@ class RNN_GAUSS(nn.Module):
                     elif i == 23:
                         i_network = 2
 
-                    y_t = states_n[n][t][i].clone() # states[t][i].clone() # state
+                    y_t = states_n[n][t][0].clone() # states[t][i].clone() # state
 
                     if not Challenge:
-                        x_t0 = states[t+1][i][:,n_feat*i:n_feat*i+n_feat].clone() 
+                        x_t0 = states[t+1][0][:,n_feat*i:n_feat*i+n_feat].clone() 
 
                         # action
                         x_t = x_t0[:,2:4] # vel 
@@ -253,16 +226,15 @@ class RNN_GAUSS(nn.Module):
                         v0_t1 = x_t0[:,2:4]
 
                     state_in = y_t
-                    enc_in = torch.cat([current_vel, state_in, h[i_network][n][-1]], 1)
+                    enc_in = torch.cat([current_vel, state_in, h[i][n][-1]], 1)
 
-                    dec_t = self.dec[i_network](h[i_network][n][-1])
+                    dec_t = self.dec[i_network](h[i][n][-1])
                     if self.batchnorm:
                         dec_t = self.bn_dec[i_network](dec_t) 
                     dec_mean_t = self.dec_mean[i_network](dec_t)
-                    dec_std_t = self.dec_std[i_network](dec_t)
                     # objective function
                     if not Challenge:
-                        out['L_rec'][n] += nll_gauss(dec_mean_t, dec_std_t, x_t, Sum)
+                        out['L_rec'][n] += batch_error(dec_mean_t, x_t, Sum)
 
                     v_t1 = dec_mean_t[:,:2]   
                     next_pos = current_pos + current_vel*fs
@@ -280,32 +252,25 @@ class RNN_GAUSS(nn.Module):
 
                         del current_pos, current_vel
 
-                    _, h[i_network][n] = self.rnn[i_network](enc_in.unsqueeze(0), h[i_network][n])
+                    _, h[i][n] = self.rnn[i_network](enc_in.unsqueeze(0), h[i][n])
 
                 # role out
                 if t >= burn_in-1 and rollout:
                     y_t = states_n[n][t].clone() 
                     if n_agents < 23:
-                        y_t1_ = states_n[n][t+1][i].clone()  
+                        y_t1_ = states_n[n][t+1][0].clone()  
                     else:
                         y_t1_ = None
                     states_new = roll_out_test(y_t,y_t1_,prediction_all,n_agents,n_feat,ball_dim,fs,batchSize)
-                    for i in range(n_agents):
-                        states_n[n][t+1][i] = states_new.clone()
+                    states_n[n][t+1][0] = states_new.clone()
         
         if not Challenge:
             for n in range(n_sample):
-                #if torch.sum(non_nan) == (len_time0-burn_in)*batchSize:
-                if not TEST: # validation
-                    out2['e_pos'][n] /= (len_time-burn_in)*n_agents
-                    out2['e_vel'][n] /= (len_time-burn_in)*n_agents
-                    out2['e_e_p'][n] /= n_agents
-                    out2['e_e_v'][n] /= n_agents
-                else:
-                    out2['e_pos'][n] /= (len_time-burn_in)*n_agents
-                    out2['e_vel'][n] /= (len_time-burn_in)*n_agents
-                    out2['e_e_p'][n] /= n_agents
-                    out2['e_e_v'][n] /= n_agents
+                out['L_rec'][n] /= (len_time-burn_in)*n_agents
+                out2['e_pos'][n] /= (len_time-burn_in)*n_agents
+                out2['e_vel'][n] /= (len_time-burn_in)*n_agents
+                out2['e_e_p'][n] /= n_agents
+                out2['e_e_v'][n] /= n_agents
 
         states = states_n[0]
         return states, out, out2
