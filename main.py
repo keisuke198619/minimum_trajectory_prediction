@@ -56,17 +56,18 @@ parser.add_argument('--drop_ind', action='store_true')
 args, _ = parser.parse_known_args()
 
 # directories
-main_dir = '../' # './'
+main_dir = '/home/s_dash/workspace6/RoboCup/' # './'
 game_dir = main_dir+'data_'+args.data+'/'
+print(game_dir+"-----------------------------------------------------")
 args.game_dir = game_dir
 Data = pd.read_pickle(game_dir+'train_data.pkl')
-path_init = './weights/' 
+path_init = '/home/s_dash/workspace6/RoboCup/Code/minimum_trajectory_prediction/weights/' 
 if args.Challenge:
     args.TEST = True
 
 def run_epoch(train,rollout,hp):
     loader = train_loader if train == 1 else val_loader if train == 0 else test_loader
- 
+
     losses = {} 
     losses2 = {}
     for batch_idx, (data) in enumerate(loader):
@@ -92,7 +93,7 @@ def run_epoch(train,rollout,hp):
         
         for key in batch_losses:
             if batch_idx == 0:
-                losses[key] = batch_losses[key].item()
+                losses[key] = batch_losses[key].item() #numpy array -> key value is numpy array so we are able to use .item
             else:
                 losses[key] += batch_losses[key].item()
         
@@ -120,7 +121,7 @@ def loss_str(losses):
     return ret[:-2]
 
 def run_sanity(args,game_files):
-    for j in range(4):
+    for j in range(4): # why 4? due to permutation
         with open(game_files+str(j)+'.pkl', 'rb') as f:
             if j == 0:
                 data = np.load(f,allow_pickle=True)[0]
@@ -143,7 +144,7 @@ def run_sanity(args,game_files):
     for t in range(args.horizon):
         for i in range(n_agents):
             
-            current_pos = data[:,t,n_feat*i+0:n_feat*i+2]
+            current_pos = data[:,t,n_feat*i+0:n_feat*i+2] # data why 3-dimension
             current_vel = data[:,burn_in,n_feat*i+2:n_feat*i+4]
             next_pos0 = GT[:,t+1,n_feat*i+0:n_feat*i+2]
             next_vel0 = GT[:,t+1,n_feat*i+2:n_feat*i+4]
@@ -229,7 +230,7 @@ if __name__ == '__main__':
     args.burn_in = 20 # int(totalTimeSteps/3)
 
     # save the processed file to disk to avoid repeated work
-    game_file0 = './data/all_'+args.data+'_games_'+str(n_GorS)+'_'+str(n_roles)
+    game_file0 = '/home/s_dash/workspace6/RoboCup/Code/minimum_trajectory_prediction/data/all_'+args.data+'_games_'+str(n_GorS)+'_'+str(n_roles)
 
     game_file0 = game_file0 + '_filt'
 
@@ -242,7 +243,7 @@ if __name__ == '__main__':
     game_file0 = game_file0 + 'Fs' + str(args.fs) 
 
     game_file0 = game_file0 + '_' + str(batchSize) + '_' + str(totalTimeSteps)
-    game_files = game_file0
+    game_files = game_file0 
     game_files_val = game_file0 + '_val'+'.pkl'
     game_files_te = game_file0 + '_te'+'.pkl'    
 
@@ -341,7 +342,7 @@ if __name__ == '__main__':
             with open(game_files+'_tr'+str(j)+'.pkl', 'wb') as f:
                 pickle.dump([tmp_data,len_seqs_val,len_seqs_test], f, protocol=4) 
 
-        J = 8
+        J = 8 #why 8
         batchval = int(len_seqs_val/J)
         for j in range(J):
             if j < J-1:
@@ -361,8 +362,8 @@ if __name__ == '__main__':
                 pickle.dump([tmp_data], f, protocol=4)     
 
         if True:
-            experiment_path = './test_samples/gt_'+str(n_roles)
-            experiment_path2 = './test_samples/input_'+str(n_roles)
+            experiment_path = '/home/s_dash/workspace6/RoboCup/Code/minimum_trajectory_prediction/test_samples/gt_'+str(n_roles)
+            experiment_path2 = '/home/s_dash/workspace6/RoboCup/Code/minimum_trajectory_prediction/test_samples/input_'+str(n_roles)
             if not os.path.exists(experiment_path):
                 os.makedirs(experiment_path)
                 os.makedirs(experiment_path2)
@@ -372,12 +373,22 @@ if __name__ == '__main__':
                 sample_ = X_test_test_all[seq].reshape((-1,23,n_feat))[:totalTimeSteps,:,:2] #
                 # ground truth
                 sample_path = os.path.join(experiment_path,str(seq)+'.csv')
-                df = pd.DataFrame(sample_.reshape(sample_.shape[0], -1), columns=[f'agent_{agent}_{coord}' for agent in range(sample_.shape[1]) for coord in ['x', 'y']])
+                # Generate the column names without list comprehension
+                columns = []
+                for agent in range(sample_.shape[1]):  # Loop over agents
+                    for coord in ['x', 'y']:          # Loop over coordinates
+                        columns.append("agent_{}_{}".format(agent, coord))
+
+                # Create the DataFrame
+                df = pd.DataFrame(
+                    sample_.reshape(sample_.shape[0], -1), 
+                    columns=columns
+                )
                 df.to_csv(sample_path, index_label='time')
                 # test input
                 sample_path = os.path.join(experiment_path2,str(seq)+'.csv')
                 sample_ = sample_[:args.burn_in]
-                df = pd.DataFrame(sample_.reshape(sample_.shape[0], -1), columns=[f'agent_{agent}_{coord}' for agent in range(sample_.shape[1]) for coord in ['x', 'y']])
+                df = pd.DataFrame(sample_.reshape(sample_.shape[0], -1), columns=["agent_{}_{}".format(agent, coord) for agent in range(sample_.shape[1]) for coord in ['x', 'y']])
 
                 #df = pd.DataFrame()
                 #for t in range(args.burn_in):
@@ -700,7 +711,7 @@ if __name__ == '__main__':
                 ) 
         else: # challenge   
             # Save samples
-            experiment_path = './results/test_'+str(n_roles)+'/submission'
+            experiment_path = '/home/s_dash/workspace6/RoboCup/Code/minimum_trajectory_prediction/results/test_'+str(n_roles)+'/submission'
             if not os.path.exists(experiment_path):
                 os.makedirs(experiment_path)
 
@@ -708,7 +719,7 @@ if __name__ == '__main__':
             for seq in range(samples.shape[2]):
                 sample_ = samples[:, 0, seq].reshape((-1,23,n_feat))[:,:,:2] #
                 sample_path = os.path.join(experiment_path, str(seq)+'.csv')
-                df = pd.DataFrame(sample_.reshape(sample_.shape[0], -1), columns=[f'agent_{agent}_{coord}' for agent in range(sample_.shape[1]) for coord in ['x', 'y']])
+                df = pd.DataFrame(sample_.reshape(sample_.shape[0], -1), columns=["agent_{}_{}".format(agent, coord) for agent in range(sample_.shape[1]) for coord in ['x', 'y']])
                 df.to_csv(sample_path, index_label='time')
             print('Samples saved to {}'.format(experiment_path))
         import pdb; pdb.set_trace()

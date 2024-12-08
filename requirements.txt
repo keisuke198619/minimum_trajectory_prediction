@@ -1,8 +1,11 @@
-numpy==1.17.4
-scipy==1.4.1
-torch==1.3.1
-scikit-learn== 0.21.3
-matplotlib==3.1.2
-hmmlearn==0.2.2
-helpers==0.2.0
-pandas==0.25.3
+numpy==1.16.6
+scipy
+torch
+scikit-learn
+matplotlib
+hmmlearn
+helpers
+pandas==0.24.2
+requests
+BeautifulSoup4
+cloudpickle
