@@ -40,7 +40,7 @@ parser.add_argument('--cont', action='store_true')
 parser.add_argument('--num_workers', type=int, default=0)
 parser.add_argument('--numProcess', type=int, default=8)
 parser.add_argument('--TEST', action='store_true') 
-parser.add_argument('--challenge_data', type=str, default=None)
+parser.add_argument('--challenge_data', type=str, default=None) # challenge data in test_sample -> input
 parser.add_argument('--Sanity', action='store_true')
 parser.add_argument('--pretrain', type=int, default=0)
 parser.add_argument('--finetune', action='store_true')
