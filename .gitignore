@@ -6,12 +6,16 @@ data/*
 test_samples/*
 results/*
 weights/*
+<<<<<<< HEAD
 tracking_csv_files3/*
 robocup2d_data/*
 robocup2d_data_/*
 robocup2d_data__/*
 slurm-*
 run.sh
+=======
+slurm-*
+>>>>>>> c3624be27bfaea845d802e88fff99779c16637a8
 *.pkl
 *.gif
 
